@@ -140,13 +140,41 @@ socket.on("connect", ()=>{
 
 function startLiveTicker(){
   if(L._tickId) return;
-  // Only re-render on the tick during phases with a live countdown to
-  // display (auction, squad-building). Ticking during lobby/reveal served
-  // no purpose and was the real cause of the "can't type a name" bug —
-  // it wiped the manager-name input every 300ms.
-  L._tickId = setInterval(()=>{
-    if(L.state && (L.state.phase==="auction" || L.state.phase==="squad")) render();
-  }, 300);
+  // Patch just the countdown numbers in place on every tick instead of a
+  // full re-render. A full re-render every 300ms was destroying and
+  // recreating every button on screen — including the bid button — which
+  // is why a tap could land on an element that got swapped out mid-touch
+  // and silently do nothing. Only a real state change (a bid, a sale, a
+  // lock) should rebuild the DOM now; that already happens via the
+  // "state" socket event below.
+  L._tickId = setInterval(tickLiveDisplay, 300);
+}
+function tickLiveDisplay(){
+  if(!L.state) return;
+  if(L.state.phase==="auction") updateAuctionTimerDom();
+  else if(L.state.phase==="squad") updateSquadTimerDom();
+}
+function updateAuctionTimerDom(){
+  const st = L.state;
+  const order = st.order;
+  if(!order || st.cur>=order.length) return;
+  const secs = Math.max(0, Math.ceil(((st.lotEndsAt||0) - Date.now())/1000));
+  let call=""; if(secs<=5 && secs>2) call="GOING ONCE"; else if(secs<=2 && secs>0) call="GOING TWICE";
+  const ring = document.getElementById("liveTimerRing");
+  if(ring){ ring.textContent = secs; ring.classList.toggle("hot", secs<=4); }
+  const callEl = document.getElementById("liveGoingCall");
+  if(callEl) callEl.textContent = call;
+}
+function updateSquadTimerDom(){
+  const st = L.state;
+  const meEntry = Object.entries(st.managers||{}).find(([id,m])=>m.isMe);
+  if(!meEntry || meEntry[1].locked) return;
+  const me = meEntry[1];
+  const remaining = Math.max(0, Math.ceil(((me.squadDeadline||Date.now())-Date.now())/1000));
+  const el = document.getElementById("liveSquadTimer");
+  if(el) el.textContent = remaining+"s";
+  const bar = document.getElementById("liveSquadProgress");
+  if(bar) bar.style.width = ((1-remaining/120)*100)+"%";
 }
 function stopLiveTicker(){ if(L._tickId){ clearInterval(L._tickId); L._tickId=null; } }
 
@@ -337,9 +365,9 @@ function renderLiveAuction(){
     <div class="priceRow">
       <div class="priceBox"><div class="lbl">Current bid</div><div class="val">${money(st.currentPrice)}</div>
       <div class="bidder">${st.currentBidder? escapeHtml((st.managers[st.currentBidder]||{}).name||"—") : "No bids yet"}</div></div>
-      <div class="timerWrap"><div class="timerRing ${secs<=4?"hot":""}">${secs}</div><div class="tiny">seconds</div></div>
+      <div class="timerWrap"><div class="timerRing ${secs<=4?"hot":""}" id="liveTimerRing">${secs}</div><div class="tiny">seconds</div></div>
     </div>
-    <div class="goingCall">${call}</div>
+    <div class="goingCall" id="liveGoingCall">${call}</div>
   </div>
   <div class="bidGrid">${cards || '<div class="tiny">No managers joined.</div>'}</div>
   ${st.isHost?`<div class="flexbtns"><button class="pillbtn" onclick="forceSellLive()">Sell now</button><button class="pillbtn" onclick="forceSkipLive()">No bids — pass</button></div>`:""}
@@ -397,8 +425,8 @@ function renderLiveSquad(){
   }
 
   return `
-  <div class="auctionTop"><span>Build your squad</span><span class="display">${remaining}s</span></div>
-  <div class="progressBar"><div class="progressFill" style="width:${(1-remaining/120)*100}%"></div></div>
+  <div class="auctionTop"><span>Build your squad</span><span class="display" id="liveSquadTimer">${remaining}s</span></div>
+  <div class="progressBar"><div class="progressFill" id="liveSquadProgress" style="width:${(1-remaining/120)*100}%"></div></div>
   <div class="card">
     <h3 class="display">${escapeHtml(me.name)}'s formation</h3>
     <div class="formPicker">${formPicker}</div>
@@ -582,7 +610,7 @@ function placeBid(managerId){
   const newPrice = S.currentPrice + inc;
   if(remainingBudget(m) < newPrice) return;
   S.currentPrice = newPrice; S.currentBidder = managerId; S.bidsOnLot++;
-  S.timer = Math.max(S.timer, 8); S.callText="";
+  S.timer = Math.max(S.timer, 10); S.callText="";
   render();
 }
 function finalizeLot(){

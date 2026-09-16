@@ -76,10 +76,11 @@ input:focus,select:focus{outline:2px solid var(--accent); outline-offset:1px;}
 .lot::before{content:""; position:absolute; inset:0; background:repeating-linear-gradient(90deg, rgba(244,241,230,0.025) 0 2px, transparent 2px 40px); pointer-events:none;}
 .lot .catTag{display:inline-block; font-family:'Oswald'; font-size:12px; letter-spacing:0.12em; text-transform:uppercase; padding:4px 12px; border-radius:100px; border:1px solid var(--accent); color:var(--accent-bright); margin-bottom:14px;}
 .lot .pname{font-size:clamp(30px,5vw,46px); margin:0 0 4px; color:#fff;}
-.lot .pmeta{color:var(--text-dim); font-size:14px; margin-bottom:18px;}
+.lot .pmeta{color:var(--chalk-dim); font-size:14px; margin-bottom:18px;}
 .lot .ovrBadge{display:inline-flex; flex-direction:column; align-items:center; justify-content:center; width:64px; height:64px; border-radius:50%; border:2px solid var(--gold); margin-bottom:10px;}
-.lot .ovrBadge b{font-family:'Oswald'; font-size:24px; line-height:1;}
-.lot .ovrBadge span{font-size:9px; letter-spacing:0.08em; color:var(--text-dim);}
+.lot .ovrBadge b{font-family:'Oswald'; font-size:24px; line-height:1; color:var(--chalk);}
+.lot .ovrBadge span{font-size:9px; letter-spacing:0.08em; color:var(--chalk-dim);}
+.lot .tiny, .lot .priceBox .bidder{color:var(--chalk-dim);}
 .priceRow{display:flex; justify-content:center; gap:34px; align-items:flex-end; margin:18px 0 6px; flex-wrap:wrap;}
 .priceBox .lbl{font-size:11px; letter-spacing:0.1em; color:var(--text-dim); text-transform:uppercase; margin-bottom:4px;}
 .priceBox .val{font-family:'Oswald'; font-size:clamp(28px,5vw,42px); color:var(--gold-bright);}
