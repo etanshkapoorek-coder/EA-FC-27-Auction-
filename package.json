@@ -1,0 +1,17 @@
+{
+  "name": "fc27-auction-night",
+  "version": "1.0.0",
+  "private": true,
+  "description": "FC27 Auction Night — live multiplayer auction game for building EA FC 27 squads.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "socket.io": "^4.7.5"
+  }
+}

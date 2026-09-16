@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: fc27-auction-night
+    env: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /healthz
+# Optional: uncomment below (needs a paid Render plan) to keep the Hall of
+# Fame file across restarts/deploys. Without a disk it resets whenever the
+# service restarts — fine for casual use, see README for details.
+#    disk:
+#      name: fc27-data
+#      mountPath: /opt/render/project/src/data
+#      sizeGB: 1
