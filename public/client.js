@@ -16,12 +16,22 @@ function money(n){
   return "£"+n;
 }
 function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
-// Only used by the pass-and-play (offline) mode; live mode gets `order` from the server.
+// Auction order, most senior groups first, highest rated within each group —
+// must match lib/gameData.js on the server exactly.
+const AUCTION_POS_RANK = {
+  GK:1,
+  LB:2, RB:2,
+  CB:3,
+  CDM:4, CM:4,
+  CAM:5,
+  LW:6, LM:6, RW:6, RM:6,
+  ST:7,
+};
 function buildOrder(){
-  const rank = {GK:0, DEF:1, MID:2, FWD:3};
   return PLAYERS.map(p=>p.id).sort((a,b)=>{
     const pa=PLAYERS[a], pb=PLAYERS[b];
-    if(rank[pa.cat]!==rank[pb.cat]) return rank[pa.cat]-rank[pb.cat];
+    const ra = AUCTION_POS_RANK[pa.pos] || 99, rb = AUCTION_POS_RANK[pb.pos] || 99;
+    if(ra!==rb) return ra-rb;
     return pb.o - pa.o;
   });
 }
@@ -323,6 +333,20 @@ function renderLiveLobby(){
     ${st.isHost ? `<button class="btn" ${canStart?"":"disabled"} onclick="startLiveAuction()">Start the auction →</button><div class="tiny">Need at least 2 managers to start.</div>` : `<p class="tiny">Waiting for the host to start the auction…</p>`}
   </div>`;
 }
+function renderMySquadSoFar(st){
+  const meId = st.myManagerId;
+  if(!meId) return "";
+  const mine = Object.entries(st.soldMap||{})
+    .filter(([pid,s])=>s.soldTo===meId)
+    .map(([pid,s])=>({p:PLAYERS[parseInt(pid,10)], price:s.price}))
+    .sort((a,b)=>b.p.o-a.p.o);
+  const total = mine.reduce((a,x)=>a+x.price,0);
+  const chips = mine.map(x=>`<div class="benchCard"><b>${escapeHtml(x.p.n)}</b><span class="tag">${x.p.pos} · ${x.p.o} OVR · ${money(x.price)}</span></div>`).join("");
+  return `<div class="card">
+    <h3 class="display">Your squad so far (${mine.length})</h3>
+    ${mine.length ? `<div class="bench">${chips}</div><div class="tiny" style="margin-top:8px;">Total spent: ${money(total)}</div>` : `<p class="tiny">No players bought yet — get in there!</p>`}
+  </div>`;
+}
 function renderLiveAuction(){
   const st = L.state;
   const order = st.order;
@@ -370,6 +394,7 @@ function renderLiveAuction(){
     <div class="goingCall" id="liveGoingCall">${call}</div>
   </div>
   <div class="bidGrid">${cards || '<div class="tiny">No managers joined.</div>'}</div>
+  ${renderMySquadSoFar(st)}
   ${st.isHost?`<div class="flexbtns"><button class="pillbtn" onclick="forceSellLive()">Sell now</button><button class="pillbtn" onclick="forceSkipLive()">No bids — pass</button></div>`:""}
   <div class="card" style="margin-top:22px;">
     <h3 class="display">Auction records so far</h3>
@@ -539,7 +564,7 @@ function renderSetup(){
   <div class="hero">
     <div class="kicker">Pass-and-play</div>
     <h2 class="display">Who's bidding<br>tonight?</h2>
-    <p class="tag">Everyone starts with ${money(BUDGET)}. Players are auctioned goalkeepers first, then defenders, midfielders, and forwards — highest rated first in each group.</p>
+    <p class="tag">Everyone starts with ${money(BUDGET)}. Players come up goalkeepers → full backs → centre backs → defensive mids → attacking mids → wingers → strikers, highest rated first in each group.</p>
   </div>
   <div class="card">
     <h3 class="display">Managers</h3>
@@ -654,6 +679,17 @@ function computeRecords(){
 function peekManagerBudget(id){ S.peekManager=id; render(); setTimeout(()=>{ if(S.peekManager===id){S.peekManager=null; render();} },4000); }
 function closePeek(){ S.peekManager=null; render(); }
 
+function renderSquadsSoFarOffline(){
+  const cards = S.managers.map(m=>{
+    const mine = m.squad.map(id=>S.pool[id]).sort((a,b)=>b.o-a.o);
+    const chips = mine.map(p=>`<div class="benchCard"><b>${escapeHtml(p.n)}</b><span class="tag">${p.pos} · ${p.o} OVR</span></div>`).join("") || `<p class="tiny">No players bought yet.</p>`;
+    return `<div class="card">
+      <h3 class="display">${escapeHtml(m.name)}'s squad so far (${mine.length})</h3>
+      <div class="bench">${chips}</div>
+    </div>`;
+  }).join("");
+  return cards;
+}
 function renderAuction(){
   const rec = computeRecords();
   const total = S.order.length;
@@ -689,6 +725,7 @@ function renderAuction(){
     <div class="goingCall">${S.callText}</div>
   </div>
   <div class="bidGrid">${bidCards}</div>
+  ${renderSquadsSoFarOffline()}
   <div class="flexbtns">
     <button class="pillbtn" onclick="forceSell()">Sell now</button>
     <button class="pillbtn" onclick="forceSkip()">No bids — pass</button>
