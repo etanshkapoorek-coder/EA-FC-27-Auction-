@@ -41,6 +41,17 @@ const CLIENT_ID = getClientId();
 let App = { mode:null, ready:false };
 
 function render(){
+  // Preserve whatever the person is mid-typing (or has focused) across a
+  // re-render — a full innerHTML replacement otherwise wipes it, which is
+  // exactly what broke the "manager name" box: the live ticker below
+  // re-renders every 300ms, destroying the input on every keystroke.
+  const activeEl = document.activeElement;
+  const activeId = activeEl && activeEl.id;
+  const isTextish = activeEl && (activeEl.tagName==="INPUT" || activeEl.tagName==="SELECT");
+  const activeVal = isTextish ? activeEl.value : null;
+  const selStart = isTextish && typeof activeEl.selectionStart==="number" ? activeEl.selectionStart : null;
+  const selEnd = isTextish && typeof activeEl.selectionEnd==="number" ? activeEl.selectionEnd : null;
+
   let body;
   if(!App.ready) body = `<div class="hero"><p class="tag">Loading…</p></div>`;
   else if(App.mode===null) body = renderModeSelect();
@@ -58,6 +69,17 @@ function render(){
     ${body}
     <div class="footer-note">Ratings based on published EA SPORTS FC™ 27 data at launch &middot; not affiliated with EA. Player ratings and squads may change with in-season updates.</div>
   `;
+
+  if(activeId){
+    const el = document.getElementById(activeId);
+    if(el && (el.tagName==="INPUT" || el.tagName==="SELECT")){
+      el.value = activeVal;
+      el.focus();
+      if(el.setSelectionRange && selStart!==null){
+        try{ el.setSelectionRange(selStart, selEnd); }catch(e){}
+      }
+    }
+  }
 }
 function navButtons(){
   if(!App.ready || App.mode===null) return "";
@@ -116,7 +138,16 @@ socket.on("connect", ()=>{
   }
 });
 
-function startLiveTicker(){ if(L._tickId) return; L._tickId = setInterval(()=>{ if(L.state) render(); }, 300); }
+function startLiveTicker(){
+  if(L._tickId) return;
+  // Only re-render on the tick during phases with a live countdown to
+  // display (auction, squad-building). Ticking during lobby/reveal served
+  // no purpose and was the real cause of the "can't type a name" bug —
+  // it wiped the manager-name input every 300ms.
+  L._tickId = setInterval(()=>{
+    if(L.state && (L.state.phase==="auction" || L.state.phase==="squad")) render();
+  }, 300);
+}
 function stopLiveTicker(){ if(L._tickId){ clearInterval(L._tickId); L._tickId=null; } }
 
 function createLiveGame(){
