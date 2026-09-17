@@ -35,6 +35,12 @@ function buildOrder(){
     return pb.o - pa.o;
   });
 }
+const AUCTION_GROUP_LABEL = {
+  1: "🧤 Goalkeepers", 2: "🏃 Full Backs", 3: "🧱 Centre Backs",
+  4: "⚙️ Defensive Midfielders", 5: "🎨 Attacking Midfielders",
+  6: "⚡ Wingers", 7: "🎯 Strikers",
+};
+function auctionGroupLabel(pos){ return AUCTION_GROUP_LABEL[AUCTION_POS_RANK[pos]] || "Player"; }
 
 /* ============================================================ CLIENT IDENTITY ============================================================ */
 function getClientId(){
@@ -225,18 +231,10 @@ function placeBidLive(managerId){
 }
 function forceSellLive(){ socket.emit("forceSell", {}); }
 function forceSkipLive(){ socket.emit("forceSkip", {}); }
+function skipCategoryLive(){ socket.emit("skipCategory", {}, (res)=>{ if(res && res.error){ L.homeWarn = res.error; render(); } }); }
 function pickFormationLive(name){ socket.emit("pickFormation", {formation:name}); }
 function moveSlotLive(playerId, toCat, toIdx){
   socket.emit("moveSlot", {playerId, toCat: (toCat===undefined?null:toCat), toIdx: (toIdx===undefined?null:toIdx)});
-}
-function quickAssignLive(playerId){
-  const meEntry = Object.entries((L.state&&L.state.managers)||{}).find(([id,m])=>m.isMe);
-  if(!meEntry || !meEntry[1].formation) return;
-  const me = meEntry[1];
-  const f = FORMATIONS.find(x=>x.name===me.formation);
-  const slots = me.slots||{};
-  const order=[["FWD",f.fwd],["MID",f.mid],["DEF",f.def],["GK",1]];
-  for(const [cat,n] of order){ for(let i=0;i<n;i++){ if(slots[cat+i]===undefined){ moveSlotLive(playerId, cat, i); return; } } }
 }
 function autofillLive(){ socket.emit("autofill", {}); }
 function lockSquadLive(){ socket.emit("lockSquad", {}); }
@@ -392,7 +390,7 @@ function renderLiveAuction(){
   <div class="auctionTop"><span>Lot ${cur+1} of ${order.length}</span><span>${rec.soldCount} sold · ${money(rec.totalSpent)} spent</span></div>
   <div class="progressBar"><div class="progressFill" style="width:${Math.round((cur/order.length)*100)}%"></div></div>
   <div class="lot">
-    <div class="catTag">${CAT_LABEL[p.cat]} · Base ${money(p.base)}</div>
+    <div class="catTag">${auctionGroupLabel(p.pos)} · Base ${money(p.base)}</div>
     <div class="ovrBadge"><b>${p.o}</b><span>OVR</span></div>
     <h2 class="display pname">${escapeHtml(p.n)}</h2>
     <div class="pmeta">${escapeHtml(p.c)} &middot; ${p.pos}</div>
@@ -405,7 +403,7 @@ function renderLiveAuction(){
   </div>
   <div class="bidGrid">${cards || '<div class="tiny">No managers joined.</div>'}</div>
   ${renderMySquadSoFar(st)}
-  ${st.isHost?`<div class="flexbtns"><button class="pillbtn" onclick="forceSellLive()">Sell now</button><button class="pillbtn" onclick="forceSkipLive()">No bids — pass</button></div>`:""}
+  ${st.isHost?`<div class="flexbtns"><button class="pillbtn" onclick="forceSellLive()">Sell now</button><button class="pillbtn" onclick="forceSkipLive()">No bids — pass</button><button class="pillbtn" onclick="skipCategoryLive()">Next category →</button></div>`:""}
   <div class="card" style="margin-top:22px;">
     <h3 class="display">Auction records so far</h3>
     <div class="recordsBar">
@@ -416,10 +414,47 @@ function renderLiveAuction(){
     </div>
   </div>`;
 }
-/* ============================================================ SQUAD DRAG & DROP (shared: live + offline) ============================================================ */
-function removeFromSlot(playerId){
-  if(App.mode==="live") moveSlotLive(playerId, null, null);
-  else moveSlotOffline(playerId, null, null);
+/* ============================================================ SQUAD PLACEMENT: tap-to-select, tap-to-place (shared: live + offline) ============================================================
+   Plain click events only — no pointer/touch-gesture tracking, no
+   elementFromPoint, no touch-action fights with the browser's own
+   scrolling. This is deliberately simple so it works the same, reliably,
+   on every phone and laptop. */
+let SELECTED = null; // {type:'bench', playerId} | {type:'slot', cat, idx}
+
+function removeFromSlot(e, playerId){
+  e.stopPropagation();
+  SELECTED = null;
+  dispatchMove(playerId, null, null);
+}
+function selectBench(playerId){
+  SELECTED = (SELECTED && SELECTED.type==="bench" && SELECTED.playerId===playerId)
+    ? null : {type:"bench", playerId};
+  render();
+}
+function selectOrPlaceSlot(cat, idx, hasPlayer){
+  if(!SELECTED){
+    if(hasPlayer) SELECTED = {type:"slot", cat, idx};
+    render();
+    return;
+  }
+  if(SELECTED.type==="slot" && SELECTED.cat===cat && SELECTED.idx===idx){
+    SELECTED = null; render(); return;
+  }
+  const playerId = SELECTED.type==="bench" ? SELECTED.playerId : currentSlotsForSelection()[SELECTED.cat+SELECTED.idx];
+  SELECTED = null;
+  dispatchMove(playerId, cat, idx);
+}
+function currentSlotsForSelection(){
+  if(App.mode==="live"){
+    const me = L.state && Object.values(L.state.managers||{}).find(m=>m.isMe);
+    return (me && me.slots) || {};
+  }
+  const m = S.managers[S.squadIdx];
+  return (m && m.slots) || {};
+}
+function dispatchMove(playerId, toCat, toIdx){
+  if(App.mode==="live") moveSlotLive(playerId, toCat, toIdx);
+  else moveSlotOffline(playerId, toCat, toIdx);
 }
 function buildPitchHtml(formation, slots, lookup){
   if(!formation) return `<div class="tiny center">Choose a formation to lay out your pitch.</div>`;
@@ -429,15 +464,16 @@ function buildPitchHtml(formation, slots, lookup){
     let s="";
     for(let i=0;i<n;i++){
       const key = cat+i, pid = slots[key];
+      const isSel = SELECTED && SELECTED.type==="slot" && SELECTED.cat===cat && SELECTED.idx===i;
       if(pid!==undefined){
         const pl = lookup(pid);
-        s += `<div class="slot filled" data-slot-cat="${cat}" data-slot-idx="${i}" data-drag-player="${pid}" data-drag-from-cat="${cat}" data-drag-from-idx="${i}">
-          <button class="slotRemove" title="Take off the pitch" onclick="event.stopPropagation(); removeFromSlot(${pid})">✕</button>
+        s += `<div class="slot filled ${isSel?"selected":""}" onclick="selectOrPlaceSlot('${cat}',${i},true)">
+          <button class="slotRemove" title="Take off the pitch" onclick="removeFromSlot(event, ${pid})">✕</button>
           <div class="sn">${escapeHtml(pl.n)}</div>
           <div class="so">(${pl.pos}) · ${pl.o} OVR</div>
         </div>`;
       } else {
-        s += `<div class="slot" data-slot-cat="${cat}" data-slot-idx="${i}"><div class="placeholder">${cat}</div></div>`;
+        s += `<div class="slot ${isSel?"selected":""}" onclick="selectOrPlaceSlot('${cat}',${i},false)"><div class="placeholder">${cat}</div></div>`;
       }
     }
     return `<div class="pitchRow">${s}</div>`;
@@ -448,77 +484,9 @@ function buildBenchListHtml(players, slots){
   return players.slice().sort((a,b)=>b.o-a.o).map(p=>{
     const used = Object.values(slots).includes(p.id);
     if(used) return `<div class="benchCard used"><b>${escapeHtml(p.n)}</b><span class="tag">(${p.pos}) · ${p.o} OVR</span><span class="tiny">On the pitch</span></div>`;
-    return `<div class="benchCard" data-drag-player="${p.id}"><b>${escapeHtml(p.n)}</b><span class="tag">(${p.pos}) · ${p.o} OVR · ${escapeHtml(p.c)}</span><span class="tiny">Tap to place, or drag onto a slot</span></div>`;
+    const isSel = SELECTED && SELECTED.type==="bench" && SELECTED.playerId===p.id;
+    return `<div class="benchCard ${isSel?"selected":""}" onclick="selectBench(${p.id})"><b>${escapeHtml(p.n)}</b><span class="tag">(${p.pos}) · ${p.o} OVR · ${escapeHtml(p.c)}</span><span class="tiny">${isSel?"Selected — now tap a slot":"Tap to select"}</span></div>`;
   }).join("");
-}
-let DRAG = null;
-function initDragSystem(){
-  document.addEventListener("pointerdown", onDragPointerDown);
-  document.addEventListener("pointermove", onDragPointerMove);
-  document.addEventListener("pointerup", onDragPointerUp);
-  document.addEventListener("pointercancel", onDragPointerUp);
-}
-function onDragPointerDown(e){
-  const item = e.target.closest && e.target.closest("[data-drag-player]");
-  if(!item) return;
-  DRAG = {
-    playerId: parseInt(item.getAttribute("data-drag-player"), 10),
-    fromCat: item.getAttribute("data-drag-from-cat"),
-    startX: e.clientX, startY: e.clientY, moved:false, sourceEl:item,
-  };
-}
-function onDragPointerMove(e){
-  if(!DRAG) return;
-  const dx = e.clientX-DRAG.startX, dy = e.clientY-DRAG.startY;
-  if(!DRAG.moved && Math.hypot(dx,dy)>10){
-    DRAG.moved = true;
-    const label = DRAG.sourceEl.querySelector("b");
-    const ghost = document.createElement("div");
-    ghost.className = "dragGhost";
-    ghost.textContent = label ? label.textContent : "Player";
-    document.body.appendChild(ghost);
-    DRAG.ghostEl = ghost;
-    DRAG.sourceEl.classList.add("dragging-source");
-  }
-  if(DRAG.moved){
-    if(DRAG.ghostEl){ DRAG.ghostEl.style.left = (e.clientX+14)+"px"; DRAG.ghostEl.style.top = (e.clientY+14)+"px"; }
-    document.querySelectorAll(".slot.dragover").forEach(el=>el.classList.remove("dragover"));
-    const target = document.elementFromPoint(e.clientX, e.clientY);
-    const slotEl = target && target.closest(".slot");
-    if(slotEl) slotEl.classList.add("dragover");
-  }
-}
-function onDragPointerUp(e){
-  if(!DRAG) return;
-  const { playerId, fromCat, moved, sourceEl, ghostEl } = DRAG;
-  if(ghostEl) ghostEl.remove();
-  if(sourceEl) sourceEl.classList.remove("dragging-source");
-  document.querySelectorAll(".slot.dragover").forEach(el=>el.classList.remove("dragover"));
-
-  if(moved){
-    const target = document.elementFromPoint(e.clientX, e.clientY);
-    const slotEl = target && target.closest(".slot");
-    const benchEl = target && target.closest("[data-bench-zone]");
-    if(slotEl){
-      const toCat = slotEl.getAttribute("data-slot-cat");
-      const toIdx = parseInt(slotEl.getAttribute("data-slot-idx"), 10);
-      dispatchMove(playerId, toCat, toIdx);
-    } else if(benchEl){
-      dispatchMove(playerId, null, null);
-    }
-  } else if(fromCat===null){
-    // a plain tap on a bench card (not a drag): auto-place in the next open slot
-    dispatchQuickAssign(playerId);
-  }
-  DRAG = null;
-}
-function dispatchMove(playerId, toCat, toIdx){
-  if(App.mode==="live") moveSlotLive(playerId, toCat, toIdx);
-  else moveSlotOffline(playerId, toCat, toIdx);
-}
-function dispatchQuickAssign(playerId){
-  if(App.mode==="live") quickAssignLive(playerId);
-  else quickAssignOffline(playerId);
 }
 
 function renderLiveSquad(){
@@ -549,12 +517,12 @@ function renderLiveSquad(){
     <h3 class="display">${escapeHtml(me.name)}'s formation</h3>
     <div class="formPicker">${formPicker}</div>
     ${pitchHtml}
-    <p class="tiny center" style="margin-top:10px;">Drag a bench player onto a slot to place them, drag between slots to swap, or drag onto the bench to take someone off. A quick tap on a bench player places them in the next open slot.</p>
+    <p class="tiny center" style="margin-top:10px;">Tap a player on the bench, then tap the slot to put them in. Tap a player already on the pitch to pick them up and move them somewhere else instead — tap them again to cancel. Use ✖ to bench someone instantly.</p>
     <div class="flexbtns"><button class="pillbtn" onclick="autofillLive()">Autofill best XI</button><button class="btn" onclick="lockSquadLive()">Lock squad ✅</button></div>
   </div>
   <div class="grid2">
-    <div class="card"><h3 class="display">Bench — Forwards / Midfielders</h3><div class="bench" data-bench-zone="true">${buildBenchListHtml(byCat.FWD, slots)}${buildBenchListHtml(byCat.MID, slots)}</div></div>
-    <div class="card"><h3 class="display">Bench — Defenders / GK</h3><div class="bench" data-bench-zone="true">${buildBenchListHtml(byCat.DEF, slots)}${buildBenchListHtml(byCat.GK, slots)}</div></div>
+    <div class="card"><h3 class="display">Bench — Forwards / Midfielders</h3><div class="bench">${buildBenchListHtml(byCat.FWD, slots)}${buildBenchListHtml(byCat.MID, slots)}</div></div>
+    <div class="card"><h3 class="display">Bench — Defenders / GK</h3><div class="bench">${buildBenchListHtml(byCat.DEF, slots)}${buildBenchListHtml(byCat.GK, slots)}</div></div>
   </div>
   <div class="card"><h3 class="display">Everyone else</h3><div class="bench">${statusList}</div></div>
   `;
@@ -750,6 +718,33 @@ function finalizeLot(){
 }
 function forceSell(){ if(S.phase==="auction"){ clearInterval(S.timerId); S.timer=0; finalizeLot(); } }
 function forceSkip(){ if(S.phase==="auction"){ clearInterval(S.timerId); S.currentBidder=null; S.timer=0; finalizeLot(); } }
+function skipCategoryOffline(){
+  if(S.phase!=="auction") return;
+  clearInterval(S.timerId);
+  const currentRank = AUCTION_POS_RANK[currentLotPlayer().pos] || 99;
+
+  const p = currentLotPlayer();
+  if(S.currentBidder!==null){
+    const m = S.managers.find(x=>x.id===S.currentBidder);
+    p.sold=true; p.soldTo=m.id; p.price=S.currentPrice; p.bids=S.bidsOnLot;
+    m.spent+=S.currentPrice; m.squad.push(p.id);
+    S.soldLog.push({playerId:p.id, managerId:m.id, price:S.currentPrice, bids:S.bidsOnLot});
+  } else {
+    p.sold=false; p.price=0;
+    S.soldLog.push({playerId:p.id, managerId:null, price:0, bids:0});
+  }
+  S.cur++;
+  while(S.cur<S.order.length){
+    const np = S.pool[S.order[S.cur]];
+    if((AUCTION_POS_RANK[np.pos]||99)!==currentRank) break;
+    np.sold=false; np.price=0;
+    S.soldLog.push({playerId:np.id, managerId:null, price:0, bids:0});
+    S.cur++;
+  }
+  if(S.cur>=S.order.length){ endAuction(); return; }
+  render();
+  startLot();
+}
 function endAuction(){
   S.phase="squad"; S.squadIdx=0;
   S.managers.forEach(m=>{ m.formation=null; m.slots={}; m.locked=false; m._turnActive=false; });
@@ -807,7 +802,7 @@ function renderAuction(){
   <div class="auctionTop"><span>Lot ${soldCount+1} of ${total}</span><span>${rec.soldCount} sold · ${money(rec.totalSpent)} spent</span></div>
   <div class="progressBar"><div class="progressFill" style="width:${pct}%"></div></div>
   <div class="lot">
-    <div class="catTag">${CAT_LABEL[p.cat]} · Base ${money(p.base)}</div>
+    <div class="catTag">${auctionGroupLabel(p.pos)} · Base ${money(p.base)}</div>
     <div class="ovrBadge"><b>${p.o}</b><span>OVR</span></div>
     <h2 class="display pname">${escapeHtml(p.n)}</h2>
     <div class="pmeta">${escapeHtml(p.c)} &middot; ${p.pos}</div>
@@ -823,6 +818,7 @@ function renderAuction(){
   <div class="flexbtns">
     <button class="pillbtn" onclick="forceSell()">Sell now</button>
     <button class="pillbtn" onclick="forceSkip()">No bids — pass</button>
+    <button class="pillbtn" onclick="skipCategoryOffline()">Next category →</button>
   </div>
   <div class="card" style="margin-top:22px;">
     <h3 class="display">Auction records so far</h3>
@@ -892,13 +888,6 @@ function moveSlotOffline(playerId, toCat, toIdx){
   m.slots[toKey]=playerId;
   render();
 }
-function quickAssignOffline(playerId){
-  const m = S.managers[S.squadIdx];
-  if(!m.formation) return;
-  const f = FORMATIONS.find(x=>x.name===m.formation);
-  const order=[["FWD",f.fwd],["MID",f.mid],["DEF",f.def],["GK",1]];
-  for(const [cat,n] of order){ for(let i=0;i<n;i++){ if(m.slots[cat+i]===undefined){ moveSlotOffline(playerId, cat, i); return; } } }
-}
 function renderSquadPhase(){
   const m = S.managers[S.squadIdx];
   if(!m._turnActive){
@@ -921,12 +910,12 @@ function renderSquadPhase(){
     <h3 class="display">${escapeHtml(m.name)}'s formation</h3>
     <div class="formPicker">${formPicker}</div>
     ${pitchHtml}
-    <p class="tiny center" style="margin-top:10px;">Drag a bench player onto a slot to place them, drag between slots to swap, or drag onto the bench to take someone off. A quick tap on a bench player places them in the next open slot.</p>
+    <p class="tiny center" style="margin-top:10px;">Tap a player on the bench, then tap the slot to put them in. Tap a player already on the pitch to pick them up and move them somewhere else instead — tap them again to cancel. Use ✖ to bench someone instantly.</p>
     <div class="flexbtns"><button class="pillbtn" onclick="autofillXI()">Autofill best XI</button><button class="btn" onclick="lockSquad()">Lock squad ✅</button></div>
   </div>
   <div class="grid2">
-    <div class="card"><h3 class="display">Your bench — Forwards / Midfielders</h3><div class="bench" data-bench-zone="true">${buildBenchListHtml(byCat.FWD, m.slots)}${buildBenchListHtml(byCat.MID, m.slots)}</div></div>
-    <div class="card"><h3 class="display">Your bench — Defenders / GK</h3><div class="bench" data-bench-zone="true">${buildBenchListHtml(byCat.DEF, m.slots)}${buildBenchListHtml(byCat.GK, m.slots)}</div></div>
+    <div class="card"><h3 class="display">Your bench — Forwards / Midfielders</h3><div class="bench">${buildBenchListHtml(byCat.FWD, m.slots)}${buildBenchListHtml(byCat.MID, m.slots)}</div></div>
+    <div class="card"><h3 class="display">Your bench — Defenders / GK</h3><div class="bench">${buildBenchListHtml(byCat.DEF, m.slots)}${buildBenchListHtml(byCat.GK, m.slots)}</div></div>
   </div>`;
 }
 function renderReveal(){
@@ -1043,7 +1032,6 @@ function resetGame(){
 
 /* ============================================================ BOOT ============================================================ */
 render();
-initDragSystem();
 fetch("/api/config").then(r=>r.json()).then(cfg=>{
   PLAYERS = cfg.players; BASE_PRICE = cfg.basePrice; CAT_LABEL = cfg.catLabel;
   FORMATIONS = cfg.formations; BUDGET = cfg.budget;

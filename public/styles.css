@@ -117,11 +117,10 @@ input:focus,select:focus{outline:2px solid var(--accent); outline-offset:1px;}
   border:1.5px dashed rgba(244,241,230,0.55); border-radius:6px;
   display:flex; flex-direction:column; align-items:center; justify-content:center;
   padding:4px 3px; text-align:center; background:rgba(0,0,0,0.12); color:#fff;
-  font-size:10.5px; cursor:grab; position:relative; touch-action:none; user-select:none;
+  font-size:10.5px; cursor:pointer; position:relative; user-select:none;
 }
 .slot.filled{border-style:solid; background:rgba(217,169,59,0.18); border-color:var(--gold);}
-.slot.dragover{outline:3px solid var(--gold-bright); outline-offset:1px; background:rgba(242,200,102,0.28);}
-.slot.dragging-source{opacity:0.35;}
+.slot.selected{outline:3px solid var(--gold-bright); outline-offset:1px; background:rgba(242,200,102,0.32);}
 .slot .sn{font-weight:700; font-size:11px; line-height:1.15; word-break:break-word; max-width:100%;}
 .slot .so{font-size:9px; color:#cfd6c9;}
 .slot .placeholder{color:rgba(255,255,255,0.5); font-size:9px; text-transform:uppercase; letter-spacing:0.05em;}
@@ -137,18 +136,11 @@ input:focus,select:focus{outline:2px solid var(--accent); outline-offset:1px;}
 }
 
 .bench{display:flex; flex-wrap:wrap; gap:8px; margin-top:14px;}
-.benchCard{border:1px solid var(--line); border-radius:6px; padding:8px 10px; font-size:12.5px; background:var(--panel); display:flex; flex-direction:column; gap:2px; min-width:120px;}
+.benchCard{border:1px solid var(--line); border-radius:6px; padding:8px 10px; font-size:12.5px; background:var(--panel); display:flex; flex-direction:column; gap:2px; min-width:120px; cursor:pointer; user-select:none;}
 .benchCard b{font-size:13px;}
 .benchCard .tag{font-size:10px; color:var(--text-dim);}
-.benchCard.used{opacity:0.35;}
-.benchCard[data-drag-player]{cursor:grab; touch-action:none; user-select:none;}
-.benchCard.dragging-source{opacity:0.35;}
-.dragGhost{
-  position:fixed; z-index:999; pointer-events:none; transform:translate(-50%,-120%);
-  background:var(--gold); color:var(--turf-1); font-weight:700; font-size:12px;
-  padding:6px 10px; border-radius:6px; box-shadow:0 4px 10px rgba(0,0,0,0.35); white-space:nowrap;
-}
-[data-bench-zone]{border-radius:8px; transition:background 0.15s;}
+.benchCard.used{opacity:0.35; cursor:default;}
+.benchCard.selected{outline:3px solid var(--gold-bright); outline-offset:1px; background:rgba(242,200,102,0.18);}
 
 .formPicker{display:flex; gap:8px; flex-wrap:wrap; margin-bottom:16px;}
 .formPicker button{background:var(--panel); border:1.5px solid var(--line); color:var(--text); padding:9px 14px; border-radius:6px; font-weight:700; font-size:13px;}
