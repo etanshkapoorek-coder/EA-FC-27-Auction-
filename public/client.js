@@ -1,5 +1,5 @@
 /* ============================================================ CONFIG (fetched from server — single source of truth) ============================================================ */
-let PLAYERS = [], BASE_PRICE = {}, CAT_LABEL = {}, FORMATIONS = [], BUDGET = 100000000;
+let PLAYERS = [], BASE_PRICE = {}, CAT_LABEL = {}, FORMATIONS = [], BUDGET = 100000000, MAX_SQUAD = 11;
 
 function nextIncrement(price){
   if(price<1000000) return 100000;
@@ -140,7 +140,7 @@ function hofFromMenu(){ App.mode="live"; render(); openHofLive(); }
 /* ============================================================ LIVE (SOCKET.IO) ============================================================ */
 const socket = io();
 function freshLiveState(){
-  return { code:null, state:null, homeWarn:"", recordDraft:{}, championId:null, recordView:false, hofView:false, hofData:null, _tickId:null };
+  return { code:null, state:null, homeWarn:"", recordDraft:{}, championId:null, recordView:false, hofView:false, hofData:null, _tickId:null, acceptingOfferIndex:null };
 }
 let L = freshLiveState();
 
@@ -229,6 +229,9 @@ function startLiveAuction(){
 function placeBidLive(managerId){
   socket.emit("placeBid", {managerId}, (res)=>{ /* ignore soft errors like "already leading" */ });
 }
+function passLotLive(){
+  socket.emit("passLot", {}, (res)=>{ /* ignore soft errors */ });
+}
 function forceSellLive(){ socket.emit("forceSell", {}); }
 function forceSkipLive(){ socket.emit("forceSkip", {}); }
 function skipCategoryLive(){ socket.emit("skipCategory", {}, (res)=>{ if(res && res.error){ L.homeWarn = res.error; render(); } }); }
@@ -284,6 +287,7 @@ function renderLiveShell(){
   switch(L.state.phase){
     case "lobby": return renderLiveLobby();
     case "auction": return renderLiveAuction();
+    case "switch": return renderLiveSwitchWindow();
     case "squad": return renderLiveSquad();
     case "reveal": return renderLiveReveal();
     default: return `<div class="hero"><p>Loading…</p></div>`;
@@ -370,14 +374,27 @@ function renderLiveAuction(){
 
   const cards = managers.map(([id,m])=>{
     const leading = st.currentBidder===id;
+    const passed = !!(st.passed && st.passed[id]);
     let inner;
     if(m.isMe){
+      const full = (m.squad||[]).length>=MAX_SQUAD;
       const remaining = (m.budget||0)-(m.spent||0);
       const afford = remaining>=needed;
-      inner = `<div class="tiny">Your remaining budget: <b>${money(remaining)}</b></div>
-        <button class="bidBtn" ${leading||!afford?"disabled":""} onclick="placeBidLive('${id}')">Bid ${money(needed)}</button>`;
+      if(full){
+        inner = `<div class="tiny">Your squad is full (${MAX_SQUAD}/${MAX_SQUAD}) — you can't buy more.</div>`;
+      } else if(leading){
+        inner = `<div class="tiny">Your remaining budget: <b>${money(remaining)}</b></div><div class="tiny">You're leading — nothing to do but wait.</div>`;
+      } else if(passed){
+        inner = `<div class="tiny">Your remaining budget: <b>${money(remaining)}</b></div><div class="tiny">You passed on this player.</div>`;
+      } else {
+        inner = `<div class="tiny">Your remaining budget: <b>${money(remaining)}</b></div>
+          <div class="flexbtns" style="margin-top:6px; gap:6px;">
+            <button class="bidBtn" ${!afford?"disabled":""} onclick="placeBidLive('${id}')">Bid ${money(needed)}</button>
+            <button class="pillbtn" onclick="passLotLive()">Pass</button>
+          </div>`;
+      }
     } else {
-      inner = `<div class="tiny">${leading?"Currently leading":"&nbsp;"}</div>`;
+      inner = `<div class="tiny">${leading?"Currently leading":(passed?"Passed":"&nbsp;")}</div>`;
     }
     return `<div class="bidCard ${leading?"leading":""}">
       <div class="mgName">${escapeHtml(m.name)} ${leading?'<span class="leadTag">LEADING</span>':""} ${m.isMe?'<span class="tiny">(you)</span>':""}</div>
@@ -527,6 +544,143 @@ function renderLiveSquad(){
   <div class="card"><h3 class="display">Everyone else</h3><div class="bench">${statusList}</div></div>
   `;
 }
+/* ---------- switch-request window (post-auction, pre-squad) ---------- */
+function requestSwitchLive(){ socket.emit("requestSwitch", {}, (res)=>{ if(res && res.error){ L.homeWarn=res.error; render(); } }); }
+function voteSwitchLive(vote){ socket.emit("voteSwitch", {vote}, (res)=>{ if(res && res.error){ L.homeWarn=res.error; render(); } }); }
+function chooseSwitchCategoryLive(cat){ socket.emit("chooseSwitchCategory", {category:cat}, (res)=>{ if(res && res.error){ L.homeWarn=res.error; render(); } }); }
+function submitSwitchOfferLive(){
+  const sel = document.getElementById("switchOfferPlayer");
+  const priceEl = document.getElementById("switchOfferPrice");
+  if(!sel || !sel.value || !priceEl) { L.homeWarn="Pick a player and a price."; render(); return; }
+  const playerId = parseInt(sel.value, 10);
+  const price = Math.round((parseFloat(priceEl.value)||0)*1000000);
+  socket.emit("submitSwitchOffer", {playerId, price}, (res)=>{
+    L.homeWarn = (res && res.error) ? res.error : "";
+    render();
+  });
+}
+function prepAcceptOffer(i){ L.acceptingOfferIndex = i; render(); }
+function cancelAcceptOffer(){ L.acceptingOfferIndex = null; render(); }
+function acceptSwitchOfferLive(offerIndex){
+  const sel = document.getElementById("switchRemovePlayer");
+  if(!sel){ return; }
+  const removePlayerId = parseInt(sel.value, 10);
+  socket.emit("acceptSwitchOffer", {offerIndex, removePlayerId}, (res)=>{
+    if(res && res.error){ L.homeWarn = res.error; render(); return; }
+    L.acceptingOfferIndex = null; L.homeWarn=""; render();
+  });
+}
+function cancelSwitchLive(){
+  L.acceptingOfferIndex = null;
+  socket.emit("cancelSwitch", {}, (res)=>{ if(res && res.error){ L.homeWarn=res.error; render(); } });
+}
+function endSwitchWindowLive(){ socket.emit("endSwitchWindow", {}, (res)=>{ if(res && res.error){ L.homeWarn=res.error; render(); } }); }
+
+function renderLiveSwitchWindow(){
+  const st = L.state;
+  const managers = Object.entries(st.managers||{});
+  const meEntry = managers.find(([id,m])=>m.isMe);
+  const sr = st.switchRequest;
+  if(!sr || sr.status!=="awaitingOffers") L.acceptingOfferIndex = null;
+
+  let mySummary = "";
+  if(meEntry){
+    const [, me] = meEntry;
+    const owned = (me.squad||[]).map(id=>PLAYERS[id]);
+    const counts = {GK:0,DEF:0,MID:0,FWD:0};
+    owned.forEach(p=>counts[p.cat]++);
+    mySummary = `<div class="card">
+      <h3 class="display">Your squad (${owned.length}/${MAX_SQUAD})</h3>
+      <div class="recordsBar">
+        <div class="recStat"><div class="k">Goalkeepers</div><div class="v">${counts.GK}</div></div>
+        <div class="recStat"><div class="k">Defenders</div><div class="v">${counts.DEF}</div></div>
+        <div class="recStat"><div class="k">Midfielders</div><div class="v">${counts.MID}</div></div>
+        <div class="recStat"><div class="k">Forwards</div><div class="v">${counts.FWD}</div></div>
+      </div>
+    </div>`;
+  }
+
+  let body = "";
+  if(!sr){
+    body = `<div class="card">
+      <h3 class="display">Fix a mistake before locking in</h3>
+      <p class="tiny">Bought two goalkeepers? Missing a striker? Request a switch — if the other managers vote yes, you'll trade one of your players for an unsold one of their choosing, at a price they set.</p>
+      ${meEntry ? `<button class="btn" onclick="requestSwitchLive()">Request a player switch</button>` : `<p class="tiny">Join as a manager to request a switch.</p>`}
+    </div>
+    ${st.isHost ? `<div class="center"><button class="btn secondary" onclick="endSwitchWindowLive()">Everyone's happy — move to squad building →</button></div>` : `<p class="tiny center">Waiting for the host to move things along, or for someone to request a switch.</p>`}`;
+  } else if(sr.status==="voting"){
+    const votedCount = Object.keys(sr.votes).length;
+    const totalOthers = managers.length-1;
+    if(sr.isMine){
+      body = `<div class="card"><h3 class="display">Your switch request</h3><p class="tiny">Waiting for votes — ${votedCount} of ${totalOthers} managers have voted.</p></div>`;
+    } else {
+      const requester = managers.find(([id])=>id===sr.requesterId);
+      const requesterName = requester ? requester[1].name : "A manager";
+      const already = sr.votes[st.myManagerId]==="cast";
+      body = `<div class="card">
+        <h3 class="display">${escapeHtml(requesterName)} wants to switch a player</h3>
+        <p class="tiny">They'll trade one of their players for an unsold one, at a price the group sets. Approve?</p>
+        ${already ? `<p class="tiny">You've voted — waiting for others.</p>` : `<div class="flexbtns"><button class="btn" onclick="voteSwitchLive('yes')">Yes, allow it</button><button class="btn secondary" onclick="voteSwitchLive('no')">No</button></div>`}
+      </div>`;
+    }
+  } else if(sr.status==="chooseCategory"){
+    if(sr.isMine){
+      const catBtns = ["GK","DEF","MID","FWD"].map(c=>`<button class="pillbtn" onclick="chooseSwitchCategoryLive('${c}')">${CAT_LABEL[c]||c}</button>`).join(" ");
+      body = `<div class="card"><h3 class="display">Approved! Pick a category</h3><p class="tiny">Which kind of player do you want to bring in?</p><div class="flexbtns">${catBtns}</div></div>`;
+    } else {
+      body = `<div class="card"><h3 class="display">Request approved</h3><p class="tiny">Waiting for them to choose a category…</p></div>`;
+    }
+  } else if(sr.status==="awaitingOffers"){
+    const unsold = PLAYERS.filter(p=>p.cat===sr.category && (!st.soldMap[p.id] || !st.soldMap[p.id].soldTo));
+    if(sr.isMine){
+      const offerRows = sr.offers.map((o,i)=>{
+        const offerer = managers.find(([id])=>id===o.fromManagerId);
+        const p = PLAYERS[o.playerId];
+        return `<tr><td>${escapeHtml(offerer?offerer[1].name:"?")}</td><td>${escapeHtml(p.n)} (${p.pos}, ${p.o} OVR)</td><td>${money(o.price)}</td><td><button class="pillbtn" onclick="prepAcceptOffer(${i})">Choose this</button></td></tr>`;
+      }).join("");
+      let acceptPanel = "";
+      if(L.acceptingOfferIndex!==null && sr.offers[L.acceptingOfferIndex]){
+        const off = sr.offers[L.acceptingOfferIndex];
+        const offPlayer = PLAYERS[off.playerId];
+        const myOwned = (meEntry[1].squad||[]).map(id=>PLAYERS[id]);
+        const removeOptions = myOwned.map(p=>`<option value="${p.id}">${escapeHtml(p.n)} (${p.pos}, ${p.o} OVR)</option>`).join("");
+        acceptPanel = `<div class="card" style="margin-top:10px;">
+          <h4>Remove which player to make room for ${escapeHtml(offPlayer.n)}?</h4>
+          <select id="switchRemovePlayer">${removeOptions}</select>
+          <div class="flexbtns">
+            <button class="btn small" onclick="acceptSwitchOfferLive(${L.acceptingOfferIndex})">Confirm — pay ${money(off.price)}</button>
+            <button class="pillbtn" onclick="cancelAcceptOffer()">Back</button>
+          </div>
+        </div>`;
+      }
+      body = `<div class="card">
+        <h3 class="display">Offers for a ${CAT_LABEL[sr.category]||sr.category}</h3>
+        ${sr.offers.length ? `<table class="hof"><tr><th>From</th><th>Player</th><th>Price</th><th></th></tr>${offerRows}</table>` : `<p class="tiny">No offers yet — waiting on the other managers.</p>`}
+        ${acceptPanel}
+        <div class="flexbtns"><button class="pillbtn" onclick="cancelSwitchLive()">Cancel my request</button></div>
+      </div>`;
+    } else {
+      const options = unsold.slice().sort((a,b)=>b.o-a.o).map(p=>`<option value="${p.id}">${escapeHtml(p.n)} (${p.pos}, ${p.o} OVR)</option>`).join("");
+      body = `<div class="card">
+        <h3 class="display">Offer a ${CAT_LABEL[sr.category]||sr.category}</h3>
+        <p class="tiny">Pick any unsold player from this category and name your price.</p>
+        <label>Player</label>
+        <select id="switchOfferPlayer">${options || '<option value="">No unsold players left in this category</option>'}</select>
+        <label style="margin-top:8px;">Price (£M)</label>
+        <input type="number" id="switchOfferPrice" min="0.1" step="0.1" placeholder="e.g. 2.5">
+        <button class="btn small" style="margin-top:8px;" onclick="submitSwitchOfferLive()">Submit offer</button>
+      </div>`;
+    }
+  }
+
+  return `
+  <div class="hero"><div class="kicker">Before squad building</div><h2 class="display">Trade window</h2><p class="tag">Fix any auction mistakes before formations are locked in.</p></div>
+  ${mySummary}
+  ${body}
+  ${L.homeWarn?`<div class="warn center">${escapeHtml(L.homeWarn)}</div>`:""}
+  `;
+}
+
 function renderLiveReveal(){
   const st = L.state;
   const managers = Object.entries(st.managers||{});
@@ -598,7 +752,7 @@ const OFFLINE_HOF_KEY = "fc27_auction_hof_v1";
 let S = {
   phase:"setup", managers:[], pool:null, order:[], cur:0, currentPrice:0, currentBidder:null,
   bidsOnLot:0, timer:0, timerId:null, callText:"", soldLog:[], squadIdx:0, squadTimerId:null,
-  squadTimeLeft:120, peekManager:null,
+  squadTimeLeft:120, peekManager:null, passed:{}, switchRequest:null, acceptingOfferIndexOffline:null,
 };
 function offlineLoadHOF(){
   try{ const raw = localStorage.getItem(OFFLINE_HOF_KEY); return raw?JSON.parse(raw):{managers:{}, log:[]}; }
@@ -609,6 +763,7 @@ function offlineSaveHOF(data){ try{ localStorage.setItem(OFFLINE_HOF_KEY, JSON.s
 function renderOfflineBody(){
   if(S.phase==="setup") return renderSetup();
   if(S.phase==="auction") return renderAuction();
+  if(S.phase==="switch") return renderSwitchWindowOffline();
   if(S.phase==="squad") return renderSquadPhase();
   if(S.phase==="reveal") return renderReveal();
   if(S.phase==="recordnight") return renderRecordNight();
@@ -678,6 +833,7 @@ function startLot(){
   clearInterval(S.timerId);
   const p = currentLotPlayer();
   S.currentPrice = p.base; S.currentBidder = null; S.bidsOnLot = 0; S.timer = 12; S.callText = "";
+  S.passed = {};
   render();
   S.timerId = setInterval(tick, 1000);
 }
@@ -693,11 +849,25 @@ function remainingBudget(m){ return m.budget - m.spent; }
 function placeBid(managerId){
   const m = S.managers.find(x=>x.id===managerId);
   if(!m || m.id===S.currentBidder) return;
+  if(m.squad.length>=MAX_SQUAD) return;
   const inc = nextIncrement(S.currentPrice);
   const newPrice = S.currentPrice + inc;
   if(remainingBudget(m) < newPrice) return;
   S.currentPrice = newPrice; S.currentBidder = managerId; S.bidsOnLot++;
   S.timer = Math.max(S.timer, 10); S.callText="";
+  render();
+}
+function passLotOffline(managerId){
+  const m = S.managers.find(x=>x.id===managerId);
+  if(!m || m.id===S.currentBidder) return;
+  S.passed = S.passed || {};
+  if(m.squad.length<MAX_SQUAD) S.passed[managerId] = true;
+  const allPassed = S.managers.every(mgr=>{
+    if(mgr.id===S.currentBidder) return true;
+    if(mgr.squad.length>=MAX_SQUAD) return true;
+    return !!S.passed[mgr.id];
+  });
+  if(allPassed){ forceSell(); return; }
   render();
 }
 function finalizeLot(){
@@ -746,9 +916,156 @@ function skipCategoryOffline(){
   startLot();
 }
 function endAuction(){
+  S.phase="switch";
+  S.switchRequest = null;
+  render();
+}
+function beginSquadPhase(){
   S.phase="squad"; S.squadIdx=0;
   S.managers.forEach(m=>{ m.formation=null; m.slots={}; m.locked=false; m._turnActive=false; });
   render();
+}
+function requestSwitchOffline(managerId){
+  if(S.phase!=="switch" || S.switchRequest) return;
+  S.switchRequest = {requesterId:managerId, status:"voting", votes:{}, category:null, offers:[]};
+  render();
+}
+function voteSwitchOffline(managerId, vote){
+  const sr = S.switchRequest;
+  if(!sr || sr.status!=="voting" || managerId===sr.requesterId) return;
+  sr.votes[managerId] = vote;
+  const others = S.managers.filter(m=>m.id!==sr.requesterId).map(m=>m.id);
+  if(others.every(id=>sr.votes[id]!==undefined)){
+    const yes = others.filter(id=>sr.votes[id]==="yes").length;
+    if(yes > others.length-yes) sr.status = "chooseCategory";
+    else S.switchRequest = null;
+  }
+  render();
+}
+function chooseSwitchCategoryOffline(cat){
+  const sr = S.switchRequest;
+  if(!sr || sr.status!=="chooseCategory") return;
+  sr.category = cat; sr.status = "awaitingOffers"; sr.offers = [];
+  render();
+}
+function submitSwitchOfferOffline(fromManagerId){
+  const sr = S.switchRequest;
+  if(!sr || sr.status!=="awaitingOffers" || fromManagerId===sr.requesterId) return;
+  const sel = document.getElementById("switchOfferPlayerOffline_"+fromManagerId);
+  const priceEl = document.getElementById("switchOfferPriceOffline_"+fromManagerId);
+  if(!sel || !sel.value || !priceEl) return;
+  const playerId = parseInt(sel.value,10);
+  const price = Math.round((parseFloat(priceEl.value)||0)*1000000);
+  if(!price) return;
+  const p = S.pool[playerId];
+  if(!p || p.cat!==sr.category || p.sold) return;
+  sr.offers = sr.offers.filter(o=>o.fromManagerId!==fromManagerId);
+  sr.offers.push({fromManagerId, playerId, price});
+  render();
+}
+function prepAcceptOfferOffline(i){ S.acceptingOfferIndexOffline = i; render(); }
+function acceptSwitchOfferOffline(offerIndex){
+  const sr = S.switchRequest;
+  if(!sr || sr.status!=="awaitingOffers") return;
+  const offer = sr.offers[offerIndex];
+  if(!offer) return;
+  const removeSel = document.getElementById("switchRemovePlayerOffline");
+  if(!removeSel || !removeSel.value) return;
+  const removePlayerId = parseInt(removeSel.value,10);
+  const m = S.managers.find(x=>x.id===sr.requesterId);
+  if(!m.squad.includes(removePlayerId)) return;
+  if(remainingBudget(m) < offer.price) return;
+
+  m.spent += offer.price;
+  m.squad = m.squad.filter(id=>id!==removePlayerId).concat([offer.playerId]);
+  Object.keys(m.slots||{}).forEach(k=>{ if(m.slots[k]===removePlayerId) delete m.slots[k]; });
+  const newP = S.pool[offer.playerId];
+  newP.sold = true; newP.soldTo = m.id; newP.price = offer.price; newP.bids = 0;
+
+  S.switchRequest = null;
+  S.acceptingOfferIndexOffline = null;
+  render();
+}
+function cancelSwitchOffline(){
+  S.switchRequest = null;
+  S.acceptingOfferIndexOffline = null;
+  render();
+}
+function renderSwitchWindowOffline(){
+  const squadTable = S.managers.map(m=>{
+    const owned = m.squad.map(id=>S.pool[id]);
+    const counts = {GK:0,DEF:0,MID:0,FWD:0};
+    owned.forEach(p=>counts[p.cat]++);
+    return `<tr><td>${escapeHtml(m.name)}</td><td>${owned.length}/${MAX_SQUAD}</td><td>${counts.GK}</td><td>${counts.DEF}</td><td>${counts.MID}</td><td>${counts.FWD}</td></tr>`;
+  }).join("");
+
+  const sr = S.switchRequest;
+  if(!sr || sr.status!=="awaitingOffers") S.acceptingOfferIndexOffline = null;
+  let body = "";
+
+  if(!sr){
+    const requestBtns = S.managers.map(m=>`<button class="pillbtn" onclick="requestSwitchOffline(${m.id})">${escapeHtml(m.name)} requests a switch</button>`).join(" ");
+    body = `<div class="card">
+      <h3 class="display">Fix a mistake before locking in</h3>
+      <p class="tiny">Anyone can request a switch. The rest of the group votes; if it passes, the others offer up an unsold player at a price, and the requester picks one to accept.</p>
+      <div class="flexbtns">${requestBtns}</div>
+    </div>
+    <div class="center"><button class="btn secondary" onclick="beginSquadPhase()">Everyone's happy — move to squad building →</button></div>`;
+  } else if(sr.status==="voting"){
+    const requester = S.managers.find(m=>m.id===sr.requesterId);
+    const rows = S.managers.filter(m=>m.id!==sr.requesterId).map(m=>{
+      const voted = sr.votes[m.id];
+      return `<div class="benchCard"><b>${escapeHtml(m.name)}</b>${voted?`<span class="tag">Voted ${voted}</span>`:`<div class="flexbtns" style="margin-top:6px;"><button class="pillbtn" onclick="voteSwitchOffline(${m.id},'yes')">Yes</button><button class="pillbtn" onclick="voteSwitchOffline(${m.id},'no')">No</button></div>`}</div>`;
+    }).join("");
+    body = `<div class="card"><h3 class="display">${escapeHtml(requester.name)} wants to switch a player</h3><p class="tiny">Everyone else, cast your vote:</p><div class="bench">${rows}</div></div>`;
+  } else if(sr.status==="chooseCategory"){
+    const requester = S.managers.find(m=>m.id===sr.requesterId);
+    const catBtns = ["GK","DEF","MID","FWD"].map(c=>`<button class="pillbtn" onclick="chooseSwitchCategoryOffline('${c}')">${CAT_LABEL[c]||c}</button>`).join(" ");
+    body = `<div class="card"><h3 class="display">Approved! ${escapeHtml(requester.name)}, pick a category</h3><div class="flexbtns">${catBtns}</div></div>`;
+  } else if(sr.status==="awaitingOffers"){
+    const requester = S.managers.find(m=>m.id===sr.requesterId);
+    const unsold = S.pool.filter(p=>p.cat===sr.category && !p.sold);
+    const offerForms = S.managers.filter(m=>m.id!==sr.requesterId).map(m=>{
+      const options = unsold.slice().sort((a,b)=>b.o-a.o).map(p=>`<option value="${p.id}">${escapeHtml(p.n)} (${p.pos}, ${p.o} OVR)</option>`).join("");
+      return `<div class="card">
+        <h4>${escapeHtml(m.name)}'s offer</h4>
+        <select id="switchOfferPlayerOffline_${m.id}">${options || '<option value="">No unsold players left</option>'}</select>
+        <input type="number" id="switchOfferPriceOffline_${m.id}" min="0.1" step="0.1" placeholder="Price £M" style="margin-top:6px;">
+        <button class="pillbtn" style="margin-top:6px;" onclick="submitSwitchOfferOffline(${m.id})">Submit offer</button>
+      </div>`;
+    }).join("");
+    const offerRows = sr.offers.map((o,i)=>{
+      const offerer = S.managers.find(m=>m.id===o.fromManagerId);
+      const p = S.pool[o.playerId];
+      return `<tr><td>${escapeHtml(offerer.name)}</td><td>${escapeHtml(p.n)} (${p.pos}, ${p.o} OVR)</td><td>${money(o.price)}</td><td><button class="pillbtn" onclick="prepAcceptOfferOffline(${i})">Choose</button></td></tr>`;
+    }).join("");
+    let acceptPanel = "";
+    if(S.acceptingOfferIndexOffline!==null && sr.offers[S.acceptingOfferIndexOffline]){
+      const off = sr.offers[S.acceptingOfferIndexOffline];
+      const offPlayer = S.pool[off.playerId];
+      const removeOptions = requester.squad.map(id=>S.pool[id]).map(p=>`<option value="${p.id}">${escapeHtml(p.n)} (${p.pos}, ${p.o} OVR)</option>`).join("");
+      acceptPanel = `<div class="card" style="margin-top:10px;">
+        <h4>Remove which player to make room for ${escapeHtml(offPlayer.n)}?</h4>
+        <select id="switchRemovePlayerOffline">${removeOptions}</select>
+        <div class="flexbtns">
+          <button class="btn small" onclick="acceptSwitchOfferOffline(${S.acceptingOfferIndexOffline})">Confirm — pay ${money(off.price)}</button>
+          <button class="pillbtn" onclick="S.acceptingOfferIndexOffline=null; render();">Back</button>
+        </div>
+      </div>`;
+    }
+    body = `<div class="card"><h3 class="display">Offers for ${escapeHtml(requester.name)}'s ${CAT_LABEL[sr.category]||sr.category}</h3>
+      ${sr.offers.length? `<table class="hof"><tr><th>From</th><th>Player</th><th>Price</th><th></th></tr>${offerRows}</table>` : `<p class="tiny">No offers submitted yet.</p>`}
+      ${acceptPanel}
+      <div class="flexbtns"><button class="pillbtn" onclick="cancelSwitchOffline()">Cancel this request</button></div>
+    </div>
+    ${offerForms}`;
+  }
+
+  return `
+  <div class="hero"><div class="kicker">Before squad building</div><h2 class="display">Trade window</h2><p class="tag">Fix any auction mistakes together before formations are locked in.</p></div>
+  <div class="card"><h3 class="display">Everyone's squads</h3><table class="hof"><tr><th>Manager</th><th>Total</th><th>GK</th><th>DEF</th><th>MID</th><th>FWD</th></tr>${squadTable}</table></div>
+  ${body}
+  `;
 }
 function computeRecords(){
   const sold = S.pool.filter(p=>p.sold);
@@ -791,10 +1108,23 @@ function renderAuction(){
     const inc = nextIncrement(S.currentPrice);
     const needed = S.currentPrice+inc;
     const afford = remainingBudget(m) >= needed;
+    const full = m.squad.length>=MAX_SQUAD;
+    const passed = !!(S.passed && S.passed[m.id]);
+    let controls;
+    if(full){
+      controls = `<div class="tiny">Squad full (${MAX_SQUAD}/${MAX_SQUAD})</div>`;
+    } else if(leading){
+      controls = `<div class="tiny">Leading</div>`;
+    } else if(passed){
+      controls = `<div class="tiny">Passed</div>`;
+    } else {
+      controls = `<button class="bidBtn" ${!afford?"disabled":""} onclick="placeBid(${m.id})">Bid ${money(needed)}</button>
+        <button class="pillbtn" style="margin-top:6px; width:100%;" onclick="passLotOffline(${m.id})">Pass</button>`;
+    }
     return `<div class="bidCard ${leading?"leading":""}">
       <div class="mgName">${escapeHtml(m.name)} ${leading?'<span class="leadTag">LEADING</span>':""}</div>
       <button class="peek" onclick="peekManagerBudget(${m.id})" style="font-size:11px;color:var(--text-dim);text-decoration:underline;background:none;border:none;padding:0;cursor:pointer;">check my budget</button>
-      <button class="bidBtn" ${leading||!afford?"disabled":""} onclick="placeBid(${m.id})">Bid ${money(needed)}</button>
+      ${controls}
     </div>`;
   }).join("");
 
@@ -1026,7 +1356,7 @@ function renderHOF(){
 function resetGame(){
   S = {phase:"setup", managers:[], pool:null, order:[], cur:0, currentPrice:0, currentBidder:null,
        bidsOnLot:0, timer:0, timerId:null, callText:"", soldLog:[], squadIdx:0, squadTimerId:null,
-       squadTimeLeft:120, peekManager:null};
+       squadTimeLeft:120, peekManager:null, passed:{}, switchRequest:null, acceptingOfferIndexOffline:null};
   render();
 }
 
@@ -1034,7 +1364,7 @@ function resetGame(){
 render();
 fetch("/api/config").then(r=>r.json()).then(cfg=>{
   PLAYERS = cfg.players; BASE_PRICE = cfg.basePrice; CAT_LABEL = cfg.catLabel;
-  FORMATIONS = cfg.formations; BUDGET = cfg.budget;
+  FORMATIONS = cfg.formations; BUDGET = cfg.budget; MAX_SQUAD = cfg.maxSquad || 11;
   App.ready = true;
   render();
 }).catch(()=>{
