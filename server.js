@@ -198,15 +198,29 @@ io.on("connection", (socket) => {
     doFinalize(room.code, { clearBidder: true });
     cb && cb({ ok: true });
   });
+  socket.on("skipCategory", (payload, cb) => {
+    const room = currentRoom(socket);
+    if (!room) return cb && cb({ error: "You're not in a room." });
+    const res = G.skipToNextCategory(room, socket.data.clientId);
+    if (res.error) return cb && cb(res);
+    broadcast(room.code);
+    scheduleLotTimer(room.code);
+    if (room.phase === "squad") scheduleSquadTimers(room.code);
+    cb && cb({ ok: true });
+  });
 
   socket.on("pickFormation", (payload, cb) =>
     mutateAndBroadcast(socket, cb, (room) => G.pickFormation(room, socket.data.clientId, payload && payload.formation))
   );
-  socket.on("assignSlot", (payload, cb) =>
-    mutateAndBroadcast(socket, cb, (room) => G.assignSlot(room, socket.data.clientId, payload.cat, payload.idx, payload.playerId))
-  );
-  socket.on("clearSlot", (payload, cb) =>
-    mutateAndBroadcast(socket, cb, (room) => G.clearSlot(room, socket.data.clientId, payload.cat, payload.idx))
+  socket.on("moveSlot", (payload, cb) =>
+    mutateAndBroadcast(socket, cb, (room) =>
+      G.movePlayerToSlot(
+        room, socket.data.clientId,
+        payload && payload.playerId,
+        payload && payload.toCat!==undefined ? payload.toCat : null,
+        payload && payload.toIdx!==undefined ? payload.toIdx : null
+      )
+    )
   );
   socket.on("autofill", (payload, cb) =>
     mutateAndBroadcast(socket, cb, (room) => G.autofillSlots(room, socket.data.clientId))
