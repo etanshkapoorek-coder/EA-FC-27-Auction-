@@ -226,8 +226,18 @@ function placeBidLive(managerId){
 function forceSellLive(){ socket.emit("forceSell", {}); }
 function forceSkipLive(){ socket.emit("forceSkip", {}); }
 function pickFormationLive(name){ socket.emit("pickFormation", {formation:name}); }
-function assignSlotLive(cat, idx, playerId){ socket.emit("assignSlot", {cat, idx, playerId}); }
-function clearSlotLive(cat, idx){ socket.emit("clearSlot", {cat, idx}); }
+function moveSlotLive(playerId, toCat, toIdx){
+  socket.emit("moveSlot", {playerId, toCat: (toCat===undefined?null:toCat), toIdx: (toIdx===undefined?null:toIdx)});
+}
+function quickAssignLive(playerId){
+  const meEntry = Object.entries((L.state&&L.state.managers)||{}).find(([id,m])=>m.isMe);
+  if(!meEntry || !meEntry[1].formation) return;
+  const me = meEntry[1];
+  const f = FORMATIONS.find(x=>x.name===me.formation);
+  const slots = me.slots||{};
+  const order=[["FWD",f.fwd],["MID",f.mid],["DEF",f.def],["GK",1]];
+  for(const [cat,n] of order){ for(let i=0;i<n;i++){ if(slots[cat+i]===undefined){ moveSlotLive(playerId, cat, i); return; } } }
+}
 function autofillLive(){ socket.emit("autofill", {}); }
 function lockSquadLive(){ socket.emit("lockSquad", {}); }
 
@@ -406,6 +416,111 @@ function renderLiveAuction(){
     </div>
   </div>`;
 }
+/* ============================================================ SQUAD DRAG & DROP (shared: live + offline) ============================================================ */
+function removeFromSlot(playerId){
+  if(App.mode==="live") moveSlotLive(playerId, null, null);
+  else moveSlotOffline(playerId, null, null);
+}
+function buildPitchHtml(formation, slots, lookup){
+  if(!formation) return `<div class="tiny center">Choose a formation to lay out your pitch.</div>`;
+  const f = FORMATIONS.find(x=>x.name===formation);
+  const rows = [["FWD",f.fwd],["MID",f.mid],["DEF",f.def],["GK",1]];
+  return `<div class="pitch">` + rows.map(([cat,n])=>{
+    let s="";
+    for(let i=0;i<n;i++){
+      const key = cat+i, pid = slots[key];
+      if(pid!==undefined){
+        const pl = lookup(pid);
+        s += `<div class="slot filled" data-slot-cat="${cat}" data-slot-idx="${i}" data-drag-player="${pid}" data-drag-from-cat="${cat}" data-drag-from-idx="${i}">
+          <button class="slotRemove" title="Take off the pitch" onclick="event.stopPropagation(); removeFromSlot(${pid})">✕</button>
+          <div class="sn">${escapeHtml(pl.n)}</div>
+          <div class="so">(${pl.pos}) · ${pl.o} OVR</div>
+        </div>`;
+      } else {
+        s += `<div class="slot" data-slot-cat="${cat}" data-slot-idx="${i}"><div class="placeholder">${cat}</div></div>`;
+      }
+    }
+    return `<div class="pitchRow">${s}</div>`;
+  }).join("") + `</div>`;
+}
+function buildBenchListHtml(players, slots){
+  if(!players.length) return `<div class="tiny">None bought.</div>`;
+  return players.slice().sort((a,b)=>b.o-a.o).map(p=>{
+    const used = Object.values(slots).includes(p.id);
+    if(used) return `<div class="benchCard used"><b>${escapeHtml(p.n)}</b><span class="tag">(${p.pos}) · ${p.o} OVR</span><span class="tiny">On the pitch</span></div>`;
+    return `<div class="benchCard" data-drag-player="${p.id}"><b>${escapeHtml(p.n)}</b><span class="tag">(${p.pos}) · ${p.o} OVR · ${escapeHtml(p.c)}</span><span class="tiny">Tap to place, or drag onto a slot</span></div>`;
+  }).join("");
+}
+let DRAG = null;
+function initDragSystem(){
+  document.addEventListener("pointerdown", onDragPointerDown);
+  document.addEventListener("pointermove", onDragPointerMove);
+  document.addEventListener("pointerup", onDragPointerUp);
+  document.addEventListener("pointercancel", onDragPointerUp);
+}
+function onDragPointerDown(e){
+  const item = e.target.closest && e.target.closest("[data-drag-player]");
+  if(!item) return;
+  DRAG = {
+    playerId: parseInt(item.getAttribute("data-drag-player"), 10),
+    fromCat: item.getAttribute("data-drag-from-cat"),
+    startX: e.clientX, startY: e.clientY, moved:false, sourceEl:item,
+  };
+}
+function onDragPointerMove(e){
+  if(!DRAG) return;
+  const dx = e.clientX-DRAG.startX, dy = e.clientY-DRAG.startY;
+  if(!DRAG.moved && Math.hypot(dx,dy)>10){
+    DRAG.moved = true;
+    const label = DRAG.sourceEl.querySelector("b");
+    const ghost = document.createElement("div");
+    ghost.className = "dragGhost";
+    ghost.textContent = label ? label.textContent : "Player";
+    document.body.appendChild(ghost);
+    DRAG.ghostEl = ghost;
+    DRAG.sourceEl.classList.add("dragging-source");
+  }
+  if(DRAG.moved){
+    if(DRAG.ghostEl){ DRAG.ghostEl.style.left = (e.clientX+14)+"px"; DRAG.ghostEl.style.top = (e.clientY+14)+"px"; }
+    document.querySelectorAll(".slot.dragover").forEach(el=>el.classList.remove("dragover"));
+    const target = document.elementFromPoint(e.clientX, e.clientY);
+    const slotEl = target && target.closest(".slot");
+    if(slotEl) slotEl.classList.add("dragover");
+  }
+}
+function onDragPointerUp(e){
+  if(!DRAG) return;
+  const { playerId, fromCat, moved, sourceEl, ghostEl } = DRAG;
+  if(ghostEl) ghostEl.remove();
+  if(sourceEl) sourceEl.classList.remove("dragging-source");
+  document.querySelectorAll(".slot.dragover").forEach(el=>el.classList.remove("dragover"));
+
+  if(moved){
+    const target = document.elementFromPoint(e.clientX, e.clientY);
+    const slotEl = target && target.closest(".slot");
+    const benchEl = target && target.closest("[data-bench-zone]");
+    if(slotEl){
+      const toCat = slotEl.getAttribute("data-slot-cat");
+      const toIdx = parseInt(slotEl.getAttribute("data-slot-idx"), 10);
+      dispatchMove(playerId, toCat, toIdx);
+    } else if(benchEl){
+      dispatchMove(playerId, null, null);
+    }
+  } else if(fromCat===null){
+    // a plain tap on a bench card (not a drag): auto-place in the next open slot
+    dispatchQuickAssign(playerId);
+  }
+  DRAG = null;
+}
+function dispatchMove(playerId, toCat, toIdx){
+  if(App.mode==="live") moveSlotLive(playerId, toCat, toIdx);
+  else moveSlotOffline(playerId, toCat, toIdx);
+}
+function dispatchQuickAssign(playerId){
+  if(App.mode==="live") quickAssignLive(playerId);
+  else quickAssignOffline(playerId);
+}
+
 function renderLiveSquad(){
   const st = L.state;
   const managers = Object.entries(st.managers||{});
@@ -425,29 +540,7 @@ function renderLiveSquad(){
   const remaining = Math.max(0, Math.ceil(((me.squadDeadline||Date.now())-Date.now())/1000));
 
   const formPicker = FORMATIONS.map(f=>`<button class="${me.formation===f.name?'active':''}" onclick="pickFormationLive('${f.name}')">${f.name}</button>`).join("");
-  let pitchHtml = `<div class="tiny center">Choose a formation.</div>`;
-  if(me.formation){
-    const f = FORMATIONS.find(x=>x.name===me.formation);
-    const rows=[["FWD",f.fwd],["MID",f.mid],["DEF",f.def],["GK",1]];
-    pitchHtml = `<div class="pitch">`+rows.map(([cat,n])=>{
-      let s="";
-      for(let i=0;i<n;i++){
-        const key=cat+i; const pid=slots[key];
-        if(pid!==undefined){ const pl=PLAYERS[pid]; s+=`<div class="slot filled" onclick="clearSlotLive('${cat}',${i})"><div class="sn">${escapeHtml(pl.n)}</div><div class="so">${pl.o} OVR</div></div>`; }
-        else s+=`<div class="slot"><div class="placeholder">${cat}</div></div>`;
-      }
-      return `<div class="pitchRow">${s}</div>`;
-    }).join("")+`</div>`;
-  }
-  function findOpen(cat){ const f=FORMATIONS.find(x=>x.name===me.formation); const need=cat==="GK"?1:f[cat.toLowerCase()]; for(let i=0;i<need;i++){ if(slots[cat+i]===undefined) return i; } return null; }
-  function benchGroup(cat){
-    return byCat[cat].map(p=>{
-      const used = Object.values(slots).includes(p.id);
-      const open = me.formation? findOpen(cat) : null;
-      return `<div class="benchCard ${used?'used':''}"><b>${escapeHtml(p.n)}</b><span class="tag">${p.pos} · ${p.o} OVR · ${escapeHtml(p.c)}</span>
-        ${!used && open!==null && me.formation? `<button class="pillbtn" style="margin-top:4px;" onclick="assignSlotLive('${cat}',${open},${p.id})">Place in XI</button>` : (used?'<span class="tiny">In starting XI</span>':'')}</div>`;
-    }).join("") || `<div class="tiny">None bought.</div>`;
-  }
+  const pitchHtml = buildPitchHtml(me.formation, slots, (id)=>PLAYERS[id]);
 
   return `
   <div class="auctionTop"><span>Build your squad</span><span class="display" id="liveSquadTimer">${remaining}s</span></div>
@@ -456,11 +549,12 @@ function renderLiveSquad(){
     <h3 class="display">${escapeHtml(me.name)}'s formation</h3>
     <div class="formPicker">${formPicker}</div>
     ${pitchHtml}
+    <p class="tiny center" style="margin-top:10px;">Drag a bench player onto a slot to place them, drag between slots to swap, or drag onto the bench to take someone off. A quick tap on a bench player places them in the next open slot.</p>
     <div class="flexbtns"><button class="pillbtn" onclick="autofillLive()">Autofill best XI</button><button class="btn" onclick="lockSquadLive()">Lock squad ✅</button></div>
   </div>
   <div class="grid2">
-    <div class="card"><h3 class="display">Bench — Forwards / Midfielders</h3><div class="bench">${benchGroup("FWD")}${benchGroup("MID")}</div></div>
-    <div class="card"><h3 class="display">Bench — Defenders / GK</h3><div class="bench">${benchGroup("DEF")}${benchGroup("GK")}</div></div>
+    <div class="card"><h3 class="display">Bench — Forwards / Midfielders</h3><div class="bench" data-bench-zone="true">${buildBenchListHtml(byCat.FWD, slots)}${buildBenchListHtml(byCat.MID, slots)}</div></div>
+    <div class="card"><h3 class="display">Bench — Defenders / GK</h3><div class="bench" data-bench-zone="true">${buildBenchListHtml(byCat.DEF, slots)}${buildBenchListHtml(byCat.GK, slots)}</div></div>
   </div>
   <div class="card"><h3 class="display">Everyone else</h3><div class="bench">${statusList}</div></div>
   `;
@@ -475,7 +569,7 @@ function renderLiveReveal(){
     if(f){
       [["FWD",f.fwd],["MID",f.mid],["DEF",f.def],["GK",1]].forEach(([cat,n])=>{
         let row="";
-        for(let i=0;i<n;i++){ const pid=slots[cat+i]; row+= pid!==undefined? `<div class="miniSlot">${escapeHtml(PLAYERS[pid].n)}</div>` : `<div class="miniSlot" style="opacity:.4;">empty</div>`; }
+        for(let i=0;i<n;i++){ const pid=slots[cat+i]; row+= pid!==undefined? `<div class="miniSlot">${escapeHtml(PLAYERS[pid].n)}<br><span style="opacity:.75;">(${PLAYERS[pid].pos})</span></div>` : `<div class="miniSlot" style="opacity:.4;">empty</div>`; }
         rows+=`<div class="miniRow">${row}</div>`;
       });
     } else rows=`<div class="tiny">No formation locked.</div>`;
@@ -766,12 +860,6 @@ function activateTurn(){
   render(); beginSquadTimer();
 }
 function pickFormation(name){ const m=S.managers[S.squadIdx]; m.formation=name; m.slots={}; render(); }
-function assignSlot(cat, idx, playerId){
-  const m = S.managers[S.squadIdx];
-  Object.keys(m.slots).forEach(k=>{ if(m.slots[k]===playerId) delete m.slots[k]; });
-  m.slots[cat+idx] = playerId; render();
-}
-function clearSlot(cat, idx){ const m=S.managers[S.squadIdx]; delete m.slots[cat+idx]; render(); }
 function autofillXI(){
   const m = S.managers[S.squadIdx]; if(!m.formation) return;
   const f = FORMATIONS.find(x=>x.name===m.formation);
@@ -791,6 +879,26 @@ function lockSquad(){
   if(S.squadIdx>=S.managers.length){ S.phase="reveal"; render(); return; }
   render();
 }
+function moveSlotOffline(playerId, toCat, toIdx){
+  const m = S.managers[S.squadIdx];
+  let fromKey = null;
+  Object.keys(m.slots).forEach(k=>{ if(m.slots[k]===playerId) fromKey=k; });
+  if(toCat===null || toCat===undefined){ if(fromKey) delete m.slots[fromKey]; render(); return; }
+  const toKey = toCat+toIdx;
+  const occupant = m.slots[toKey];
+  if(fromKey && fromKey!==toKey){
+    if(occupant!==undefined) m.slots[fromKey]=occupant; else delete m.slots[fromKey];
+  }
+  m.slots[toKey]=playerId;
+  render();
+}
+function quickAssignOffline(playerId){
+  const m = S.managers[S.squadIdx];
+  if(!m.formation) return;
+  const f = FORMATIONS.find(x=>x.name===m.formation);
+  const order=[["FWD",f.fwd],["MID",f.mid],["DEF",f.def],["GK",1]];
+  for(const [cat,n] of order){ for(let i=0;i<n;i++){ if(m.slots[cat+i]===undefined){ moveSlotOffline(playerId, cat, i); return; } } }
+}
 function renderSquadPhase(){
   const m = S.managers[S.squadIdx];
   if(!m._turnActive){
@@ -804,32 +912,8 @@ function renderSquadPhase(){
   const owned = m.squad.map(id=>S.pool[id]);
   const byCat = {GK:owned.filter(p=>p.cat==="GK"), DEF:owned.filter(p=>p.cat==="DEF"), MID:owned.filter(p=>p.cat==="MID"), FWD:owned.filter(p=>p.cat==="FWD")};
   const formPicker = FORMATIONS.map(f=>`<button class="${m.formation===f.name?'active':''}" onclick="pickFormation('${f.name}')">${f.name}</button>`).join("");
+  const pitchHtml = buildPitchHtml(m.formation, m.slots, (id)=>S.pool[id]);
 
-  let pitchHtml = `<div class="tiny center">Choose a formation to lay out your pitch.</div>`;
-  if(m.formation){
-    const f = FORMATIONS.find(x=>x.name===m.formation);
-    const rows = [{cat:"FWD", n:f.fwd}, {cat:"MID", n:f.mid}, {cat:"DEF", n:f.def}, {cat:"GK", n:1}];
-    pitchHtml = `<div class="pitch">` + rows.map(r=>{
-      let slotsHtml="";
-      for(let i=0;i<r.n;i++){
-        const key=r.cat+i; const pid = m.slots[key];
-        if(pid!==undefined){ const pl = S.pool[pid]; slotsHtml += `<div class="slot filled" onclick="clearSlot('${r.cat}',${i})"><div class="sn">${escapeHtml(pl.n)}</div><div class="so">${pl.o} OVR</div></div>`; }
-        else slotsHtml += `<div class="slot"><div class="placeholder">${r.cat}</div></div>`;
-      }
-      return `<div class="pitchRow">${slotsHtml}</div>`;
-    }).join("") + `</div>`;
-  }
-  function findOpenSlot(cat){ const f = FORMATIONS.find(x=>x.name===m.formation); const need = cat==="GK"?1:f[cat.toLowerCase()]; for(let i=0;i<need;i++){ if(m.slots[cat+i]===undefined) return i; } return null; }
-  function benchGroup(cat){
-    return byCat[cat].map(p=>{
-      const usedSlot = Object.keys(m.slots).find(k=>m.slots[k]===p.id);
-      const openSlot = m.formation ? findOpenSlot(cat) : null;
-      return `<div class="benchCard ${usedSlot?'used':''}">
-        <b>${escapeHtml(p.n)}</b><span class="tag">${p.pos} · ${p.o} OVR · ${escapeHtml(p.c)}</span>
-        ${!usedSlot && openSlot!==null && m.formation ? `<button class="pillbtn" style="margin-top:4px;" onclick="assignSlot('${cat}',${openSlot},${p.id})">Place in XI</button>` : (usedSlot?'<span class="tiny">In starting XI</span>':'')}
-      </div>`;
-    }).join("") || `<div class="tiny">None bought.</div>`;
-  }
   return `
   <div class="auctionTop"><span>Squad selection · ${S.squadIdx+1} of ${S.managers.length}</span><span id="squadTimerVal" class="display">${S.squadTimeLeft}s</span></div>
   <div class="progressBar"><div class="progressFill" style="width:${(1-S.squadTimeLeft/120)*100}%"></div></div>
@@ -837,11 +921,12 @@ function renderSquadPhase(){
     <h3 class="display">${escapeHtml(m.name)}'s formation</h3>
     <div class="formPicker">${formPicker}</div>
     ${pitchHtml}
+    <p class="tiny center" style="margin-top:10px;">Drag a bench player onto a slot to place them, drag between slots to swap, or drag onto the bench to take someone off. A quick tap on a bench player places them in the next open slot.</p>
     <div class="flexbtns"><button class="pillbtn" onclick="autofillXI()">Autofill best XI</button><button class="btn" onclick="lockSquad()">Lock squad ✅</button></div>
   </div>
   <div class="grid2">
-    <div class="card"><h3 class="display">Your bench — Forwards / Midfielders</h3><div class="bench">${benchGroup("FWD")}${benchGroup("MID")}</div></div>
-    <div class="card"><h3 class="display">Your bench — Defenders / GK</h3><div class="bench">${benchGroup("DEF")}${benchGroup("GK")}</div></div>
+    <div class="card"><h3 class="display">Your bench — Forwards / Midfielders</h3><div class="bench" data-bench-zone="true">${buildBenchListHtml(byCat.FWD, m.slots)}${buildBenchListHtml(byCat.MID, m.slots)}</div></div>
+    <div class="card"><h3 class="display">Your bench — Defenders / GK</h3><div class="bench" data-bench-zone="true">${buildBenchListHtml(byCat.DEF, m.slots)}${buildBenchListHtml(byCat.GK, m.slots)}</div></div>
   </div>`;
 }
 function renderReveal(){
@@ -851,7 +936,7 @@ function renderReveal(){
     if(f){
       [["FWD",f.fwd],["MID",f.mid],["DEF",f.def],["GK",1]].forEach(([cat,n])=>{
         let row="";
-        for(let i=0;i<n;i++){ const pid=m.slots[cat+i]; row += pid!==undefined ? `<div class="miniSlot">${escapeHtml(S.pool[pid].n)}</div>` : `<div class="miniSlot" style="opacity:0.4;">empty</div>`; }
+        for(let i=0;i<n;i++){ const pid=m.slots[cat+i]; row += pid!==undefined ? `<div class="miniSlot">${escapeHtml(S.pool[pid].n)}<br><span style="opacity:.75;">(${S.pool[pid].pos})</span></div>` : `<div class="miniSlot" style="opacity:0.4;">empty</div>`; }
         rows += `<div class="miniRow">${row}</div>`;
       });
     } else rows = `<div class="tiny">No formation locked in.</div>`;
@@ -958,6 +1043,7 @@ function resetGame(){
 
 /* ============================================================ BOOT ============================================================ */
 render();
+initDragSystem();
 fetch("/api/config").then(r=>r.json()).then(cfg=>{
   PLAYERS = cfg.players; BASE_PRICE = cfg.basePrice; CAT_LABEL = cfg.catLabel;
   FORMATIONS = cfg.formations; BUDGET = cfg.budget;
