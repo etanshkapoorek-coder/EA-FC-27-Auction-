@@ -16,6 +16,7 @@ app.get("/api/config", (req, res) => {
     catLabel: D.CAT_LABEL,
     formations: D.FORMATIONS,
     budget: D.BUDGET,
+    maxSquad: G.MAX_SQUAD,
   });
 });
 app.get("/healthz", (req, res) => res.send("ok"));
@@ -183,6 +184,15 @@ io.on("connection", (socket) => {
     scheduleLotTimer(room.code);
     cb && cb({ ok: true });
   });
+  socket.on("passLot", (payload, cb) => {
+    const room = currentRoom(socket);
+    if (!room) return cb && cb({ error: "You're not in a room." });
+    const res = G.passLot(room, socket.data.clientId);
+    if (res.error) return cb && cb(res);
+    broadcast(room.code);
+    if (res.allPassed) doFinalize(room.code, {});
+    cb && cb({ ok: true });
+  });
 
   socket.on("forceSell", (payload, cb) => {
     const room = currentRoom(socket);
@@ -232,6 +242,34 @@ io.on("connection", (socket) => {
     if (res.error) return cb && cb(res);
     broadcast(room.code);
     if (res.allLocked) clearRoomTimers(room.code);
+    cb && cb({ ok: true });
+  });
+
+  socket.on("requestSwitch", (payload, cb) =>
+    mutateAndBroadcast(socket, cb, (room) => G.requestSwitch(room, socket.data.clientId))
+  );
+  socket.on("voteSwitch", (payload, cb) =>
+    mutateAndBroadcast(socket, cb, (room) => G.voteSwitch(room, socket.data.clientId, payload && payload.vote))
+  );
+  socket.on("chooseSwitchCategory", (payload, cb) =>
+    mutateAndBroadcast(socket, cb, (room) => G.chooseSwitchCategory(room, socket.data.clientId, payload && payload.category))
+  );
+  socket.on("submitSwitchOffer", (payload, cb) =>
+    mutateAndBroadcast(socket, cb, (room) => G.submitSwitchOffer(room, socket.data.clientId, payload && payload.playerId, payload && payload.price))
+  );
+  socket.on("acceptSwitchOffer", (payload, cb) =>
+    mutateAndBroadcast(socket, cb, (room) => G.acceptSwitchOffer(room, socket.data.clientId, payload && payload.offerIndex, payload && payload.removePlayerId))
+  );
+  socket.on("cancelSwitch", (payload, cb) =>
+    mutateAndBroadcast(socket, cb, (room) => G.cancelSwitch(room, socket.data.clientId))
+  );
+  socket.on("endSwitchWindow", (payload, cb) => {
+    const room = currentRoom(socket);
+    if (!room) return cb && cb({ error: "You're not in a room." });
+    const res = G.endSwitchWindow(room, socket.data.clientId);
+    if (res.error) return cb && cb(res);
+    broadcast(room.code);
+    scheduleSquadTimers(room.code);
     cb && cb({ ok: true });
   });
 

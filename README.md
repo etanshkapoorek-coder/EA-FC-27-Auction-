@@ -91,16 +91,29 @@ the server reads it (`process.env.PORT`).
 2. Everyone else opens the same URL, enters the code, and types a manager
    name to join.
 3. Host clicks **Start the auction** once at least 2 managers have joined.
-   Players come up **goalkeepers → defenders → midfielders → forwards**,
+   Players come up **goalkeepers → full backs → centre backs → defensive
+   mids → attacking mids → wingers → strikers**,
    highest-rated first in each group. Bidding is classic English-auction
    style: highest bid wins once the clock runs out, with the clock resetting
-   on every new bid.
-4. When the pool is exhausted, everyone gets 2 minutes (simultaneously, on
-   their own device) to pick a formation and starting XI from the players
-   they won.
-5. Once everyone's locked in, all squads are revealed together, along with
+   on every new bid. Each manager can own **at most 11 players** — bidding
+   locks automatically once you're full. If everyone who could still bid on
+   a player hits **Pass**, the lot resolves immediately instead of waiting
+   out the clock.
+4. Once the pool is exhausted, there's a **trade window** before squad
+   building: if someone realises they bought the wrong mix (two
+   goalkeepers, no strikers, whatever), they can request a switch. The rest
+   of the group votes; if a majority approves, the requester picks a
+   category, the other managers each offer up an unsold player from that
+   category at a price of their choosing, and the requester picks one to
+   accept (paying that price and dropping one of their own players to make
+   room). Anyone can request one at a time, and the host moves things along
+   to squad building once everyone's satisfied.
+5. Everyone then gets 2 minutes (simultaneously, on their own device) to
+   pick a formation and starting XI from the players they own — tap a
+   player to select them, then tap the slot you want them in.
+6. Once everyone's locked in, all squads are revealed together, along with
    auction records (most expensive signing, biggest bargain, priciest
    squad, biggest bidding war).
-6. Go play the actual matches in EA FC 27 with those squads, then come back
+7. Go play the actual matches in EA FC 27 with those squads, then come back
    and log the results — wins/draws/losses and who was champion of the
    night — which rolls into the shared **Hall of Fame**.
