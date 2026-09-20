@@ -1,5 +1,5 @@
 /* ============================================================ CONFIG (fetched from server — single source of truth) ============================================================ */
-let PLAYERS = [], BASE_PRICE = {}, CAT_LABEL = {}, FORMATIONS = [], BUDGET = 100000000, MAX_SQUAD = 11;
+let PLAYERS = [], BASE_PRICE = {}, CAT_LABEL = {}, FORMATIONS = [], BUDGET = 100000000, MAX_SQUAD = 11, LEAGUES = [];
 
 function nextIncrement(price){
   if(price<1000000) return 100000;
@@ -317,6 +317,29 @@ function renderLiveHome(){
   <div class="center"><button class="pillbtn" onclick="openHofLive()">🏆 View Hall of Fame</button> <button class="pillbtn" onclick="backToMenu()">← Back to menu</button></div>
   `;
 }
+function toggleLeagueLive(){
+  const boxes = document.querySelectorAll(".leagueCheckbox");
+  const selected = [];
+  boxes.forEach(b=>{ if(b.checked) selected.push(b.value); });
+  socket.emit("setLeagues", {leagues:selected}, (res)=>{ if(res && res.error){ L.homeWarn=res.error; render(); } });
+}
+function renderLeagueSelector(st){
+  const selected = st.leagues || LEAGUES.map(l=>l.key);
+  const count = PLAYERS.filter(p=>selected.includes(p.league)).length;
+  const checks = LEAGUES.map(l=>{
+    const checked = selected.includes(l.key);
+    return `<label style="display:flex; align-items:center; gap:8px; padding:5px 0; font-size:14px;">
+      <input class="leagueCheckbox" type="checkbox" value="${l.key}" ${checked?"checked":""} ${st.isHost?"":"disabled"} onchange="toggleLeagueLive()">
+      ${escapeHtml(l.label)}
+    </label>`;
+  }).join("");
+  return `<div class="card">
+    <h3 class="display">Leagues in the pool</h3>
+    ${st.isHost ? `<p class="tiny">Pick which leagues to include — locks once the auction starts.</p>` : `<p class="tiny">Set by the host.</p>`}
+    ${checks}
+    <div class="tiny" style="margin-top:6px;">${count} player${count===1?"":"s"} in the pool right now.</div>
+  </div>`;
+}
 function renderLiveLobby(){
   const st = L.state;
   const managers = Object.entries(st.managers||{});
@@ -341,6 +364,7 @@ function renderLiveLobby(){
       </div>` : `<div class="tiny" style="margin-top:10px;">You're in ✅</div>`}
     ${L.homeWarn?`<div class="warn">${escapeHtml(L.homeWarn)}</div>`:""}
   </div>
+  ${renderLeagueSelector(st)}
   <div class="center">
     ${st.isHost ? `<button class="btn" ${canStart?"":"disabled"} onclick="startLiveAuction()">Start the auction →</button><div class="tiny">Need at least 2 managers to start.</div>` : `<p class="tiny">Waiting for the host to start the auction…</p>`}
   </div>`;
@@ -753,6 +777,7 @@ let S = {
   phase:"setup", managers:[], pool:null, order:[], cur:0, currentPrice:0, currentBidder:null,
   bidsOnLot:0, timer:0, timerId:null, callText:"", soldLog:[], squadIdx:0, squadTimerId:null,
   squadTimeLeft:120, peekManager:null, passed:{}, switchRequest:null, acceptingOfferIndexOffline:null,
+  leagues:null,
 };
 function offlineLoadHOF(){
   try{ const raw = localStorage.getItem(OFFLINE_HOF_KEY); return raw?JSON.parse(raw):{managers:{}, log:[]}; }
@@ -769,6 +794,30 @@ function renderOfflineBody(){
   if(S.phase==="recordnight") return renderRecordNight();
   if(S.phase==="hof") return renderHOF();
   return "";
+}
+function toggleLeagueOffline(){
+  const boxes = document.querySelectorAll(".leagueCheckboxOffline");
+  const selected = [];
+  boxes.forEach(b=>{ if(b.checked) selected.push(b.value); });
+  S.leagues = selected;
+  render();
+}
+function renderLeagueSelectorOffline(){
+  const selected = S.leagues===null ? LEAGUES.map(l=>l.key) : S.leagues;
+  const count = PLAYERS.filter(p=>selected.includes(p.league)).length;
+  const checks = LEAGUES.map(l=>{
+    const checked = selected.includes(l.key);
+    return `<label style="display:flex; align-items:center; gap:8px; padding:5px 0; font-size:14px;">
+      <input class="leagueCheckboxOffline" type="checkbox" value="${l.key}" ${checked?"checked":""} onchange="toggleLeagueOffline()">
+      ${escapeHtml(l.label)}
+    </label>`;
+  }).join("");
+  return `<div class="card">
+    <h3 class="display">Leagues in the pool</h3>
+    <p class="tiny">Pick which leagues to include tonight.</p>
+    ${checks}
+    <div class="tiny" style="margin-top:6px;">${count} player${count===1?"":"s"} in the pool right now.</div>
+  </div>`;
 }
 function renderSetup(){
   if(S.managers.length===0){ S.managers=[{name:""},{name:""}]; }
@@ -801,15 +850,12 @@ function renderSetup(){
       </table>
       <div class="tiny" style="margin-top:8px;">Wide midfielders (LM/RM) are auctioned as Forwards.</div>
     </div>
-    <div class="card">
-      <h3 class="display">Player pool</h3>
-      <p style="font-size:14px; color:var(--text-dim);">${PLAYERS.length} real FC27-rated players, from Mbappé and Haaland (91 OVR) down to solid rotation options.</p>
-      <button class="pillbtn" onclick="goHOF()">🏆 View Hall of Fame</button>
-    </div>
+    ${renderLeagueSelectorOffline()}
   </div>
   <div class="center" style="margin-top:10px;">
     <button class="btn" onclick="startAuction()">Start the auction →</button>
     <div id="setupWarn" class="warn"></div>
+    <button class="pillbtn" style="margin-top:10px;" onclick="goHOF()">🏆 View Hall of Fame</button>
   </div>`;
 }
 function updateManagerName(i,v){ S.managers[i].name=v; }
@@ -854,7 +900,7 @@ function placeBid(managerId){
   const newPrice = S.currentPrice + inc;
   if(remainingBudget(m) < newPrice) return;
   S.currentPrice = newPrice; S.currentBidder = managerId; S.bidsOnLot++;
-  S.timer = Math.max(S.timer, 10); S.callText="";
+  S.timer = Math.max(S.timer, 23); S.callText="";
   render();
 }
 function passLotOffline(managerId){
@@ -1356,7 +1402,8 @@ function renderHOF(){
 function resetGame(){
   S = {phase:"setup", managers:[], pool:null, order:[], cur:0, currentPrice:0, currentBidder:null,
        bidsOnLot:0, timer:0, timerId:null, callText:"", soldLog:[], squadIdx:0, squadTimerId:null,
-       squadTimeLeft:120, peekManager:null, passed:{}, switchRequest:null, acceptingOfferIndexOffline:null};
+       squadTimeLeft:120, peekManager:null, passed:{}, switchRequest:null, acceptingOfferIndexOffline:null,
+       leagues:null};
   render();
 }
 
@@ -1364,7 +1411,7 @@ function resetGame(){
 render();
 fetch("/api/config").then(r=>r.json()).then(cfg=>{
   PLAYERS = cfg.players; BASE_PRICE = cfg.basePrice; CAT_LABEL = cfg.catLabel;
-  FORMATIONS = cfg.formations; BUDGET = cfg.budget; MAX_SQUAD = cfg.maxSquad || 11;
+  FORMATIONS = cfg.formations; BUDGET = cfg.budget; MAX_SQUAD = cfg.maxSquad || 11; LEAGUES = cfg.leagues || [];
   App.ready = true;
   render();
 }).catch(()=>{
